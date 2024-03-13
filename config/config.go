@@ -82,6 +82,7 @@ func (config *Config) getConfigUseTelemetry(opts Config) *Config {
 }
 
 func (config *Config) ToAddress() string {
+	fmt.Print("PORT ", config.Port)
 	return fmt.Sprintf("%s:%d", config.Host, config.Port)
 }
 

@@ -1,11 +1,10 @@
 package service
 
 import (
+	"database/sql"
 	config "mkfst/config"
 	router "mkfst/router"
 	telemetry "mkfst/telemetry"
-
-	"github.com/gin-gonic/gin"
 )
 
 type Service struct {
@@ -15,17 +14,20 @@ type Service struct {
 
 func Create(opts config.Config) Service {
 
-	service := Service{}
+	service := Service{
+		config: config.Create(opts),
+	}
 
 	router := router.Create(
-		config.Create(opts),
+		service.config,
 	)
+
 	service.router = &router
 
 	return service
 }
 
-func (service *Service) Middleware(middleware ...gin.HandlerFunc) *router.Router {
+func (service *Service) Middleware(middleware ...router.MkfstHandler) *router.Router {
 	return service.router.Middleware(middleware...)
 }
 
@@ -36,7 +38,7 @@ func (service *Service) AddGroup(group router.Group) *router.Router {
 func (service *Service) Route(
 	method string,
 	path string,
-	handler gin.HandlerFunc,
+	handler router.MkfstHandler,
 ) *router.Router {
 	return service.router.Route(
 		method,
@@ -51,16 +53,22 @@ func (service *Service) Group(path string) *router.Group {
 	)
 }
 
+func (service *Service) GetDB() *sql.DB {
+	return service.router.Db.Conn
+}
+
 func (service *Service) Run() (err error) {
 
 	otel := telemetry.Context{}
 
 	if service.config.UseTelemetry {
-		otel.Create()
-		defer otel.Shutdown()
+		otel.Init()
+		defer otel.Close()
 	}
 
 	ginRouter := service.router.Build()
+
+	defer service.router.Db.Conn.Close()
 	ginRouter.Run(service.config.ToAddress())
 
 	return

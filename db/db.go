@@ -14,8 +14,8 @@ type ConnectionInfo struct {
 }
 
 type Connection struct {
-	db     *sql.DB
-	config ConnectionInfo
+	Conn   *sql.DB
+	Config ConnectionInfo
 }
 
 func (config *ConnectionInfo) getDBType(opts ConnectionInfo) *ConnectionInfo {
@@ -186,7 +186,7 @@ func Configure(opts ConnectionInfo) ConnectionInfo {
 func Create(config ConnectionInfo) Connection {
 
 	connection := Connection{
-		config: config,
+		Config: config,
 	}
 
 	switch config.Type {
@@ -206,7 +206,7 @@ func Create(config ConnectionInfo) Connection {
 		if err != nil {
 			log.Fatal(err)
 		}
-		connection.db = db
+		connection.Conn = db
 
 	case "POSTGRESQL":
 		db, err := sql.Open(
@@ -224,17 +224,10 @@ func Create(config ConnectionInfo) Connection {
 		if err != nil {
 			log.Fatal(err)
 		}
-		connection.db = db
-	default:
-		db, err := sql.Open(
-			"sqlite3",
-			config.Host,
-		)
+		connection.Conn = db
 
-		if err != nil {
-			log.Fatal(err)
-		}
-		connection.db = db
+	default:
+		connection = createSqliteDB(connection, config)
 	}
 
 	return connection

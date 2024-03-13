@@ -1,1 +1,1 @@
-package mkfst
+package main

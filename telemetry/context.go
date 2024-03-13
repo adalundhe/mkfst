@@ -2,54 +2,35 @@ package telemetry
 
 import (
 	"context"
-	"errors"
-	"os"
-	"os/signal"
+	"log"
+
+	"go.opentelemetry.io/otel"
+	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type Context struct {
-	ctx             context.Context
-	stop            context.CancelFunc
-	shutdownCtxCall func(context.Context) error
-	errors          []error
+	provider *sdktrace.TracerProvider
 }
 
-func (otelctx *Context) Create() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-
-	otelctx.ctx = ctx
-	otelctx.stop = stop
-
-	otelShutdown, err := SetupOpenTelemetrySDK(ctx)
+func (otelctx *Context) Init() {
+	exporter, err := stdout.New(stdout.WithPrettyPrint())
 	if err != nil {
-		otelctx.errors = append(otelctx.errors, err)
-		return
+		log.Fatal(err)
 	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithBatcher(exporter),
+	)
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
-	otelctx.shutdownCtxCall = otelShutdown
+	otelctx.provider = tp
 }
 
-func (otelctx *Context) Shutdown() error {
-
-	otelctx.stop()
-
-	shutdownErr := otelctx.shutdownCtxCall(context.Background())
-	otelctx.errors = append(otelctx.errors, shutdownErr)
-
-	return errors.Join(otelctx.errors...)
-}
-
-func CreateContext() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	// Set up OpenTelemetry.
-	otelShutdown, err := SetupOpenTelemetrySDK(ctx)
-	if err != nil {
-		return
+func (otelctx *Context) Close() {
+	if err := otelctx.provider.Shutdown(context.Background()); err != nil {
+		log.Printf("Error shutting down tracer provider: %v", err)
 	}
-
-	defer func() {
-		err = errors.Join(err, otelShutdown(context.Background()))
-	}()
 }
