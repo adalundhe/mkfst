@@ -154,6 +154,12 @@ func (group *Group) addRouteToGroup(route Route) {
 	}
 }
 
+func CreateGroup(path string) *Group {
+	return &Group{
+		path: path,
+	}
+}
+
 func Create(config config.Config) Router {
 
 	if config.SkipDB {
