@@ -1,16 +1,17 @@
 package router
 
 import (
-	"fmt"
-	"log"
 	config "mkfst/config"
 	db "mkfst/db"
 
+	tonic "mkfst/tonic"
+
 	gin "github.com/gin-gonic/gin"
+	fizz "github.com/wI2L/fizz"
 )
 
 type Router struct {
-	base       *gin.Engine
+	Base       *fizz.Fizz
 	Db         *db.Connection
 	groups     []Group
 	routes     []Route
@@ -18,27 +19,38 @@ type Router struct {
 }
 
 type Group struct {
-	router     *Router
-	base       *gin.RouterGroup
-	path       string
-	routes     []Route
-	middleware []MkfstHandler
+	router                  *Router
+	Base                    *fizz.RouterGroup
+	path, name, description string
+	routes                  []Route
+	middleware              []MkfstHandler
 }
 
 type Route struct {
 	method, path string
-	handlers     []MkfstHandler
+	docs         []fizz.OperationOption
+	handlers     []interface{}
+	status       int
 }
 
-func (router *Router) Group(path string) *Group {
+func (router *Router) Group(
+	path string,
+	name string,
+	description string,
+) *Group {
 
-	fmt.Print(router.base.Group(path), "GROUP!")
 	group := &Group{
-		router:     router,
-		base:       router.base.Group(path),
-		path:       path,
-		routes:     []Route{},
-		middleware: []MkfstHandler{},
+		router: router,
+		Base: router.Base.Group(
+			path,
+			name,
+			description,
+		),
+		path:        path,
+		name:        name,
+		description: description,
+		routes:      []Route{},
+		middleware:  []MkfstHandler{},
 	}
 
 	router.groups = append(router.groups, *group)
@@ -46,7 +58,12 @@ func (router *Router) Group(path string) *Group {
 }
 
 func (router *Router) AddGroup(group Group) *Router {
-	group.base = router.base.Group(group.path)
+	group.Base = router.Base.Group(
+		group.path,
+		group.name,
+		group.description,
+	)
+
 	router.groups = append(router.groups, group)
 	return router
 }
@@ -56,24 +73,32 @@ func (router *Router) Middleware(handlers ...MkfstHandler) *Router {
 	return router
 }
 
-func (router *Router) Route(method string, path string, handlers ...MkfstHandler) *Router {
+func (router *Router) Route(
+	method string,
+	path string,
+	status int,
+	docs []fizz.OperationOption,
+	handlers ...interface{},
+) *Router {
 	router.routes = append(
 		router.routes,
 		Route{
 			method:   method,
 			path:     path,
+			docs:     docs,
 			handlers: handlers,
+			status:   status,
 		},
 	)
 
 	return router
 }
 
-func (router *Router) Build() *gin.Engine {
-	base := router.base
+func (router *Router) Build() *fizz.Fizz {
+	Base := router.Base
 
 	for _, middleware := range router.middleware {
-		base.Use(func(ctx *gin.Context) {
+		Base.Use(func(ctx *gin.Context) {
 			middleware(
 				ctx,
 				router.Db.Conn,
@@ -90,7 +115,7 @@ func (router *Router) Build() *gin.Engine {
 		group.router = router
 
 		for _, middleware := range group.middleware {
-			group.base.Use(func(ctx *gin.Context) {
+			group.Base.Use(func(ctx *gin.Context) {
 				middleware(
 					ctx,
 					router.Db.Conn,
@@ -103,98 +128,24 @@ func (router *Router) Build() *gin.Engine {
 		}
 	}
 
-	return router.base
+	return router.Base
 }
 
 func (router *Router) addRouteToRouter(route Route) {
-	switch route.method {
-	case "DELETE":
-		router.base.DELETE(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "HEAD":
-		router.base.HEAD(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "OPTIONS":
-		router.base.OPTIONS(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "GET":
-		router.base.GET(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "PATCH":
-		router.base.PATCH(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "POST":
-		router.base.POST(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "PUT":
-		router.base.PUT(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	default:
-		log.Fatalf("Err. - unknown HTTP method %s", route.method)
-	}
+
+	mappedHandlers := MapHandlers(
+		route.handlers,
+		func(handler interface{}) gin.HandlerFunc {
+			return tonic.Handler(handler, router.Db.Conn, route.status)
+		},
+	)
+
+	router.Base.Handle(
+		route.path,
+		route.method,
+		route.docs,
+		mappedHandlers...,
+	)
 }
 
 func (group *Group) Middleware(handlers ...MkfstHandler) *Group {
@@ -202,117 +153,57 @@ func (group *Group) Middleware(handlers ...MkfstHandler) *Group {
 	return group
 }
 
-func (group *Group) Route(method string, path string, handlers ...MkfstHandler) *Group {
+func (group *Group) Route(
+	method string,
+	path string,
+	status int,
+	docs []fizz.OperationOption,
+	handlers ...interface{},
+) *Group {
 	group.routes = append(
 		group.routes,
 		Route{
 			method:   method,
 			path:     path,
+			docs:     docs,
 			handlers: handlers,
+			status:   status,
 		},
 	)
 
 	return group
 }
 
-func (group *Group) Build() *gin.Engine {
+func (group *Group) Build() *fizz.Fizz {
 	return group.router.Build()
 }
 
 func (group *Group) addRouteToGroup(route Route) {
-	switch route.method {
-	case "DELETE":
-		group.base.DELETE(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						group.router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "HEAD":
-		group.base.HEAD(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						group.router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "OPTIONS":
-		group.base.OPTIONS(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						group.router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "GET":
-		group.base.GET(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						group.router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "PATCH":
-		group.base.PATCH(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						group.router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "POST":
-		group.base.POST(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						group.router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	case "PUT":
-		group.base.PUT(route.path, MapHandlers(
-			route.handlers,
-			func(handler MkfstHandler) gin.HandlerFunc {
-				return func(ctx *gin.Context) {
-					handler(
-						ctx,
-						group.router.Db.Conn,
-					)
-				}
-			},
-		)...)
-	default:
-		log.Fatalf("Err. - unknown HTTP method %s", route.method)
-	}
+
+	mappedHandlers := MapHandlers(
+		route.handlers,
+		func(handler interface{}) gin.HandlerFunc {
+			return tonic.Handler(handler, group.router.Db.Conn, route.status)
+		},
+	)
+
+	group.Base.Handle(
+		route.path,
+		route.method,
+		route.docs,
+		mappedHandlers...,
+	)
 }
 
-func CreateGroup(path string) *Group {
+func CreateGroup(
+	path string,
+	name string,
+	description string,
+) *Group {
 	return &Group{
-		path: path,
+		path:        path,
+		name:        name,
+		description: description,
 	}
 }
 
@@ -328,7 +219,7 @@ func Create(config config.Config) Router {
 
 	if config.SkipDB {
 		return Router{
-			base:       gin.New(),
+			Base:       fizz.NewFromEngine(gin.New()),
 			groups:     []Group{},
 			routes:     []Route{},
 			middleware: []MkfstHandler{},
@@ -340,7 +231,7 @@ func Create(config config.Config) Router {
 	)
 
 	return Router{
-		base:       gin.New(),
+		Base:       fizz.New(),
 		Db:         &connection,
 		groups:     []Group{},
 		routes:     []Route{},

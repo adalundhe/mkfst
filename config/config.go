@@ -6,6 +6,8 @@ import (
 	db "mkfst/db"
 	"os"
 	"strconv"
+
+	"github.com/wI2L/fizz/openapi"
 )
 
 type Config struct {
@@ -13,7 +15,9 @@ type Config struct {
 	Port         int
 	UseTelemetry bool
 	SkipDB       bool
+	UseHTTPS     bool
 	Database     db.ConnectionInfo
+	Spec         openapi.Info
 }
 
 func (config *Config) getConfigHost(opts Config) *Config {
@@ -47,6 +51,22 @@ func (config *Config) getConfigPort(opts Config) *Config {
 
 	return config
 
+}
+
+func (config *Config) getConfigUseHTTPS(opts Config) *Config {
+	if value, ok := os.LookupEnv("APP_SKIP_HTTPS"); ok {
+		useHTTPS, err := strconv.ParseBool(value)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config.UseHTTPS = useHTTPS
+	}
+
+	if opts.UseHTTPS {
+		config.UseHTTPS = opts.UseHTTPS
+	}
+
+	return config
 }
 
 func (config *Config) getConfigSkipDB(opts Config) *Config {
@@ -90,11 +110,14 @@ func Create(opts Config) Config {
 
 	config := Config{
 		Database: db.ConnectionInfo{},
+		Spec:     opts.Spec,
 	}
 
 	config.getConfigHost(
 		opts,
 	).getConfigPort(
+		opts,
+	).getConfigUseHTTPS(
 		opts,
 	).getConfigSkipDB(
 		opts,

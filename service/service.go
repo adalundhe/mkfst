@@ -2,20 +2,28 @@ package service
 
 import (
 	"database/sql"
+	"fmt"
 	config "mkfst/config"
 	router "mkfst/router"
 	telemetry "mkfst/telemetry"
+	http "net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/wI2L/fizz"
+	"github.com/wI2L/fizz/openapi"
 )
 
 type Service struct {
 	config config.Config
 	router *router.Router
+	spec   *openapi.Info
 }
 
 func Create(opts config.Config) Service {
 
 	service := Service{
 		config: config.Create(opts),
+		spec:   &opts.Spec,
 	}
 
 	router := router.Create(
@@ -38,18 +46,28 @@ func (service *Service) AddGroup(group router.Group) *router.Router {
 func (service *Service) Route(
 	method string,
 	path string,
-	handler router.MkfstHandler,
+	status int,
+	docs []fizz.OperationOption,
+	handler interface{},
 ) *router.Router {
 	return service.router.Route(
 		method,
 		path,
+		status,
+		docs,
 		handler,
 	)
 }
 
-func (service *Service) Group(path string) *router.Group {
+func (service *Service) Group(
+	path string,
+	name string,
+	description string,
+) *router.Group {
 	return service.router.Group(
 		path,
+		name,
+		description,
 	)
 }
 
@@ -66,10 +84,36 @@ func (service *Service) Run() (err error) {
 		defer otel.Close()
 	}
 
-	ginRouter := service.router.Build()
+	var docsPrefix = "http"
+	if service.config.UseHTTPS {
+		docsPrefix = "https"
+	}
+
+	serviceAddress := service.config.ToAddress()
+
+	service.router.Base.Engine().LoadHTMLGlob("docs/*")
+	service.router.Base.GET("/docs/api", nil, func(ctx *gin.Context) {
+		ctx.HTML(200, "index.tmpl", gin.H{
+			"url": fmt.Sprintf(
+				"%s://%s/%s",
+				docsPrefix,
+				serviceAddress,
+				"openapi.json",
+			),
+		})
+	})
+	service.router.Base.GET("/openapi.json", nil, service.router.Base.OpenAPI(service.spec, "json"))
+	service.router.Base.GET("/openapi.yaml", nil, service.router.Base.OpenAPI(service.spec, "yaml"))
+
+	fizzRouter := service.router.Build()
 
 	defer service.router.Db.Conn.Close()
-	ginRouter.Run(service.config.ToAddress())
+
+	srv := &http.Server{
+		Addr:    serviceAddress,
+		Handler: fizzRouter,
+	}
+	srv.ListenAndServe()
 
 	return
 
