@@ -68,7 +68,6 @@ func Handler(h interface{}, db *sql.DB, status int, options ...func(*Route)) gin
 		// tonic handler call.
 		args := []reflect.Value{reflect.ValueOf(c)}
 		args = append(args, reflect.ValueOf(db))
-		fmt.Print(args)
 
 		// Tonic handler has custom input, handle
 		// binding.
