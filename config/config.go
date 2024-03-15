@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/wI2L/fizz/openapi"
+	"mkfst/fizz/openapi"
 )
 
 type Config struct {

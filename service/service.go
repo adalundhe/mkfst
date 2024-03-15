@@ -8,9 +8,10 @@ import (
 	telemetry "mkfst/telemetry"
 	http "net/http"
 
+	"mkfst/fizz"
+	"mkfst/fizz/openapi"
+
 	"github.com/gin-gonic/gin"
-	"github.com/wI2L/fizz"
-	"github.com/wI2L/fizz/openapi"
 )
 
 type Service struct {

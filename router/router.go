@@ -6,8 +6,9 @@ import (
 
 	tonic "mkfst/tonic"
 
+	fizz "mkfst/fizz"
+
 	gin "github.com/gin-gonic/gin"
-	fizz "github.com/wI2L/fizz"
 )
 
 type Router struct {
