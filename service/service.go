@@ -6,6 +6,7 @@ import (
 	config "mkfst/config"
 	router "mkfst/router"
 	telemetry "mkfst/telemetry"
+	"mkfst/tonic"
 	http "net/http"
 
 	"mkfst/fizz"
@@ -93,7 +94,7 @@ func (service *Service) Run() (err error) {
 	serviceAddress := service.config.ToAddress()
 
 	service.router.Base.Engine().LoadHTMLGlob("docs/*")
-	service.router.Base.GET("/docs/api", nil, func(ctx *gin.Context) {
+	service.router.Base.GET("/api/docs", nil, func(ctx *gin.Context) {
 		ctx.HTML(200, "index.tmpl", gin.H{
 			"url": fmt.Sprintf(
 				"%s://%s/%s",
@@ -107,6 +108,17 @@ func (service *Service) Run() (err error) {
 	service.router.Base.GET("/openapi.yaml", nil, service.router.Base.OpenAPI(service.spec, "yaml"))
 
 	fizzRouter := service.router.Build()
+	fizzRouter.GET(
+		"/status",
+		[]fizz.OperationOption{},
+		tonic.Handler(
+			func(ctx *gin.Context, db *sql.DB) (string, error) {
+				return "OK", nil
+			},
+			service.GetDB(),
+			200,
+		),
+	)
 
 	defer service.router.Db.Conn.Close()
 

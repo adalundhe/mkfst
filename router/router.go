@@ -1,6 +1,8 @@
 package router
 
 import (
+	"fmt"
+	"log"
 	config "mkfst/config"
 	db "mkfst/db"
 
@@ -9,6 +11,7 @@ import (
 	fizz "mkfst/fizz"
 
 	gin "github.com/gin-gonic/gin"
+	"github.com/gofrs/uuid"
 )
 
 type Router struct {
@@ -25,6 +28,7 @@ type Group struct {
 	path, name, description string
 	routes                  []Route
 	middleware              []MkfstHandler
+	groups                  []*Group
 }
 
 type Route struct {
@@ -98,6 +102,10 @@ func (router *Router) Route(
 func (router *Router) Build() *fizz.Fizz {
 	Base := router.Base
 
+	for _, group := range router.groups {
+		router = getGroups(group, router)
+	}
+
 	for _, middleware := range router.middleware {
 		Base.Use(func(ctx *gin.Context) {
 			middleware(
@@ -113,8 +121,6 @@ func (router *Router) Build() *fizz.Fizz {
 
 	for _, group := range router.groups {
 
-		group.router = router
-
 		for _, middleware := range group.middleware {
 			group.Base.Use(func(ctx *gin.Context) {
 				middleware(
@@ -124,9 +130,14 @@ func (router *Router) Build() *fizz.Fizz {
 			})
 		}
 
-		for _, route := range group.routes {
-			group.addRouteToGroup(route)
+		if len(group.routes) > 0 {
+			for _, route := range group.routes {
+				group.router = router
+				group.addRouteToGroup(route)
+			}
+
 		}
+
 	}
 
 	return router.Base
@@ -141,6 +152,13 @@ func (router *Router) addRouteToRouter(route Route) {
 		},
 	)
 
+	id, err := uuid.NewV4()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	route.docs = append(route.docs, fizz.ID(id.String()))
+
 	router.Base.Handle(
 		route.path,
 		route.method,
@@ -154,6 +172,24 @@ func (group *Group) Middleware(handlers ...MkfstHandler) *Group {
 	return group
 }
 
+func (group *Group) Group(
+	path string,
+	name string,
+	description string,
+) *Group {
+
+	createdGroup := &Group{
+		path:        path,
+		name:        name,
+		description: description,
+		routes:      []Route{},
+		middleware:  []MkfstHandler{},
+	}
+
+	group.groups = append(group.groups, createdGroup)
+	return createdGroup
+}
+
 func (group *Group) Route(
 	method string,
 	path string,
@@ -161,6 +197,7 @@ func (group *Group) Route(
 	docs []fizz.OperationOption,
 	handlers ...interface{},
 ) *Group {
+
 	group.routes = append(
 		group.routes,
 		Route{
@@ -188,6 +225,13 @@ func (group *Group) addRouteToGroup(route Route) {
 		},
 	)
 
+	id, err := uuid.NewV4()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	route.docs = append(route.docs, fizz.ID(id.String()))
+
 	group.Base.Handle(
 		route.path,
 		route.method,
@@ -214,6 +258,41 @@ func MapHandlers[T, U any](ts []T, f func(T) U) []U {
 		res = append(res, f(t))
 	}
 	return res
+}
+
+func getGroups(group Group, router *Router) *Router {
+
+	if group.Base == nil {
+		group.Base = router.Base.Group(
+			group.path,
+			group.name,
+			group.description,
+		)
+	}
+
+	if len(group.groups) > 0 {
+		for _, subgroup := range group.groups {
+			subgroup.path = fmt.Sprintf("%s%s", group.path, subgroup.path)
+			router = getGroups(*subgroup, router)
+		}
+	}
+
+	if !contains(router.groups, group) {
+		router.groups = append(router.groups, group)
+	}
+
+	return router
+
+}
+
+func contains(groups []Group, comparator Group) bool {
+	for _, group := range groups {
+		if group.path == comparator.path {
+			return true
+		}
+	}
+
+	return false
 }
 
 func Create(config config.Config) Router {
