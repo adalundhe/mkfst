@@ -107,12 +107,7 @@ func (router *Router) Build() *fizz.Fizz {
 	}
 
 	for _, middleware := range router.middleware {
-		Base.Use(func(ctx *gin.Context) {
-			middleware(
-				ctx,
-				router.Db.Conn,
-			)
-		})
+		Base.Use(tonic.Handler(middleware, router.Db.Conn, 200))
 	}
 
 	for _, route := range router.routes {
@@ -122,6 +117,7 @@ func (router *Router) Build() *fizz.Fizz {
 	for _, group := range router.groups {
 
 		for _, middleware := range group.middleware {
+			fmt.Println(middleware, group.path)
 			group.Base.Use(func(ctx *gin.Context) {
 				middleware(
 					ctx,
@@ -273,6 +269,7 @@ func getGroups(group Group, router *Router) *Router {
 	if len(group.groups) > 0 {
 		for _, subgroup := range group.groups {
 			subgroup.path = fmt.Sprintf("%s%s", group.path, subgroup.path)
+			subgroup.middleware = append(subgroup.middleware, group.middleware...)
 			router = getGroups(*subgroup, router)
 		}
 	}
