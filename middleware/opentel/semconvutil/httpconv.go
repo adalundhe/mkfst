@@ -16,6 +16,10 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.20.0"
 )
 
+func HTTPAttributesFromHTTPStatusCode(code int) []attribute.KeyValue {
+	return hc.HTTPAttributesFromHTTPStatusCode(code)
+}
+
 // HTTPClientResponse returns trace attributes for an HTTP response received by a
 // client from a server. It will return the following attributes if the related
 // values are defined in resp: "http.status.code",
@@ -77,6 +81,13 @@ func HTTPClientStatus(code int) (codes.Code, string) {
 // "net.sock.peer.port", "user_agent.original", "http.client_ip".
 func HTTPServerRequest(server string, req *http.Request) []attribute.KeyValue {
 	return hc.ServerRequest(server, req)
+}
+
+func (sc *httpConv) HTTPAttributesFromHTTPStatusCode(code int) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		sc.HTTPStatusCodeKey.Int(code),
+	}
+	return attrs
 }
 
 // HTTPServerRequestMetrics returns metric attributes for an HTTP request received by a

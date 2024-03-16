@@ -16,8 +16,8 @@ type Context struct {
 }
 
 type TracingConfig struct {
-	traceExporter  sdktrace.SpanExporter
-	metricExporter sdkmetric.Exporter
+	TraceExporter  sdktrace.SpanExporter
+	MetricExporter sdkmetric.Exporter
 	options        []sdktrace.BatchSpanProcessorOption
 }
 
@@ -25,7 +25,7 @@ func (otelctx *Context) Init(config *TracingConfig) {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithBatcher(
-			config.traceExporter,
+			config.TraceExporter,
 			config.options...,
 		),
 	)

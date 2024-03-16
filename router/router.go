@@ -117,7 +117,6 @@ func (router *Router) Build() *fizz.Fizz {
 	for _, group := range router.groups {
 
 		for _, middleware := range group.middleware {
-			fmt.Println(middleware, group.path)
 			group.Base.Use(func(ctx *gin.Context) {
 				middleware(
 					ctx,

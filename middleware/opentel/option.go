@@ -3,6 +3,7 @@ package opentel
 import (
 	"net/http"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
@@ -70,5 +71,74 @@ func WithFilter(f ...Filter) Option {
 func WithSpanNameFormatter(f func(r *http.Request) string) Option {
 	return optionFunc(func(c *config) {
 		c.SpanNameFormatter = f
+	})
+}
+
+/////// Metrics -------
+
+// Option applies a configuration to the given config
+type MetricOption interface {
+	applyMetric(cfg *MetricConfig)
+}
+
+type MetricOptionFunc func(cfg *MetricConfig)
+
+func (fn MetricOptionFunc) applyMetric(cfg *MetricConfig) {
+	fn(cfg)
+}
+
+// WithAttributes sets a func using which what attributes to be recorded can be specified.
+// By default the DefaultAttributes is used
+func WithAttributes(attributes func(serverName, route string, request *http.Request) []attribute.KeyValue) MetricOption {
+	return MetricOptionFunc(func(cfg *MetricConfig) {
+		cfg.attributes = attributes
+	})
+}
+
+// WithRecordInFlight determines whether to record In Flight Requests or not
+// By default the recordInFlight is true
+func WithRecordInFlightDisabled() MetricOption {
+	return MetricOptionFunc(func(cfg *MetricConfig) {
+		cfg.recordInFlight = false
+	})
+}
+
+// WithRecordDuration determines whether to record Duration of Requests or not
+// By default the recordDuration is true
+func WithRecordDurationDisabled() MetricOption {
+	return MetricOptionFunc(func(cfg *MetricConfig) {
+		cfg.recordDuration = false
+	})
+}
+
+// WithRecordSize determines whether to record Size of Requests and Responses or not
+// By default the recordSize is true
+func WithRecordSizeDisabled() MetricOption {
+	return MetricOptionFunc(func(cfg *MetricConfig) {
+		cfg.recordSize = false
+	})
+}
+
+// WithGroupedStatus determines whether to group the response status codes or not. If true 2xx, 3xx will be stored
+// By default the groupedStatus is true
+func WithGroupedStatusDisabled() MetricOption {
+	return MetricOptionFunc(func(cfg *MetricConfig) {
+		cfg.groupedStatus = false
+	})
+}
+
+// WithRecorder sets a recorder for recording requests
+// By default the open telemetry recorder is used
+func WithRecorder(recorder MetricRecorder) MetricOption {
+	return MetricOptionFunc(func(cfg *MetricConfig) {
+		cfg.recorder = recorder
+	})
+}
+
+// WithShouldRecordFunc sets a func using which whether a record should be recorded
+// By default the all api calls are recorded
+func WithShouldRecordFunc(shouldRecord func(serverName, route string, request *http.Request) bool) MetricOption {
+	return MetricOptionFunc(func(cfg *MetricConfig) {
+		cfg.shouldRecord = shouldRecord
 	})
 }

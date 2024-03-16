@@ -73,7 +73,7 @@ func CreateOpenTelemetryTraceProvider(
 ) (*trace.TracerProvider, error) {
 
 	traceProvider := trace.NewTracerProvider(
-		trace.WithBatcher(config.traceExporter,
+		trace.WithBatcher(config.TraceExporter,
 			// Default is 5s. Set to 1s for demonstrative purposes.
 			trace.WithBatchTimeout(time.Second)),
 	)
@@ -85,7 +85,7 @@ func CreateOpenTelemetryMeterProvider(
 ) (*metric.MeterProvider, error) {
 
 	meterProvider := metric.NewMeterProvider(
-		metric.WithReader(metric.NewPeriodicReader(config.metricExporter,
+		metric.WithReader(metric.NewPeriodicReader(config.MetricExporter,
 			// Default is 1m. Set to 3s for demonstrative purposes.
 			metric.WithInterval(3*time.Second))),
 	)

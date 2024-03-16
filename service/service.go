@@ -27,6 +27,7 @@ func Create(opts config.Config) Service {
 	service := Service{
 		config: config.Create(opts),
 		spec:   &opts.Spec,
+		otel:   &telemetry.Context{},
 	}
 
 	router := router.Create(
