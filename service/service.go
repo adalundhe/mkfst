@@ -40,7 +40,7 @@ func Create(opts config.Config) Service {
 	return service
 }
 
-func (service *Service) Middleware(middleware ...router.MkfstHandler) *router.Router {
+func (service *Service) Middleware(middleware ...interface{}) *router.Router {
 	return service.router.Middleware(middleware...)
 }
 

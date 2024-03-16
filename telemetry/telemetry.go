@@ -55,6 +55,7 @@ func SetupOpenTelemetrySDK(
 		handleErr(err)
 		return
 	}
+
 	shutdownFuncs = append(shutdownFuncs, meterProvider.Shutdown)
 	otel.SetMeterProvider(meterProvider)
 

@@ -19,7 +19,7 @@ type Router struct {
 	Db         *db.Connection
 	groups     []Group
 	routes     []Route
-	middleware []MkfstHandler
+	middleware []interface{}
 }
 
 type Group struct {
@@ -27,7 +27,7 @@ type Group struct {
 	Base                    *fizz.RouterGroup
 	path, name, description string
 	routes                  []Route
-	middleware              []MkfstHandler
+	middleware              []interface{}
 	groups                  []*Group
 }
 
@@ -55,7 +55,7 @@ func (router *Router) Group(
 		name:        name,
 		description: description,
 		routes:      []Route{},
-		middleware:  []MkfstHandler{},
+		middleware:  []any{},
 	}
 
 	router.groups = append(router.groups, *group)
@@ -73,7 +73,7 @@ func (router *Router) AddGroup(group Group) *Router {
 	return router
 }
 
-func (router *Router) Middleware(handlers ...MkfstHandler) *Router {
+func (router *Router) Middleware(handlers ...interface{}) *Router {
 	router.middleware = append(router.middleware, handlers...)
 	return router
 }
@@ -117,12 +117,7 @@ func (router *Router) Build() *fizz.Fizz {
 	for _, group := range router.groups {
 
 		for _, middleware := range group.middleware {
-			group.Base.Use(func(ctx *gin.Context) {
-				middleware(
-					ctx,
-					router.Db.Conn,
-				)
-			})
+			group.Base.Use(tonic.Handler(middleware, router.Db.Conn, 200))
 		}
 
 		if len(group.routes) > 0 {
@@ -162,7 +157,7 @@ func (router *Router) addRouteToRouter(route Route) {
 	)
 }
 
-func (group *Group) Middleware(handlers ...MkfstHandler) *Group {
+func (group *Group) Middleware(handlers ...interface{}) *Group {
 	group.middleware = append(group.middleware, handlers...)
 	return group
 }
@@ -178,7 +173,7 @@ func (group *Group) Group(
 		name:        name,
 		description: description,
 		routes:      []Route{},
-		middleware:  []MkfstHandler{},
+		middleware:  []any{},
 	}
 
 	group.groups = append(group.groups, createdGroup)
@@ -298,7 +293,7 @@ func Create(config config.Config) Router {
 			Base:       fizz.NewFromEngine(gin.New()),
 			groups:     []Group{},
 			routes:     []Route{},
-			middleware: []MkfstHandler{},
+			middleware: []any{},
 		}
 	}
 
@@ -311,6 +306,6 @@ func Create(config config.Config) Router {
 		Db:         &connection,
 		groups:     []Group{},
 		routes:     []Route{},
-		middleware: []MkfstHandler{},
+		middleware: []any{},
 	}
 }
