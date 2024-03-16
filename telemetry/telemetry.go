@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -15,7 +13,10 @@ import (
 
 // setupOTelSDK bootstraps the OpenTelemetry pipeline.
 // If it does not return an error, make sure to call shutdown for proper cleanup.
-func SetupOpenTelemetrySDK(ctx context.Context) (shutdown func(context.Context) error, err error) {
+func SetupOpenTelemetrySDK(
+	ctx context.Context,
+	config *TracingConfig,
+) (shutdown func(context.Context) error, err error) {
 	var shutdownFuncs []func(context.Context) error
 
 	// shutdown calls cleanup functions registered via shutdownFuncs.
@@ -40,7 +41,7 @@ func SetupOpenTelemetrySDK(ctx context.Context) (shutdown func(context.Context) 
 	otel.SetTextMapPropagator(prop)
 
 	// Set up trace provider.
-	tracerProvider, err := CreateOpenTelemetryTraceProvider()
+	tracerProvider, err := CreateOpenTelemetryTraceProvider(config)
 	if err != nil {
 		handleErr(err)
 		return
@@ -49,7 +50,7 @@ func SetupOpenTelemetrySDK(ctx context.Context) (shutdown func(context.Context) 
 	otel.SetTracerProvider(tracerProvider)
 
 	// Set up meter provider.
-	meterProvider, err := CreateOpenTelemetryMeterProvider()
+	meterProvider, err := CreateOpenTelemetryMeterProvider(config)
 	if err != nil {
 		handleErr(err)
 		return
@@ -67,29 +68,24 @@ func CreateOpenTelemetryPropagator() propagation.TextMapPropagator {
 	)
 }
 
-func CreateOpenTelemetryTraceProvider() (*trace.TracerProvider, error) {
-	traceExporter, err := stdouttrace.New(
-		stdouttrace.WithPrettyPrint())
-	if err != nil {
-		return nil, err
-	}
+func CreateOpenTelemetryTraceProvider(
+	config *TracingConfig,
+) (*trace.TracerProvider, error) {
 
 	traceProvider := trace.NewTracerProvider(
-		trace.WithBatcher(traceExporter,
+		trace.WithBatcher(config.traceExporter,
 			// Default is 5s. Set to 1s for demonstrative purposes.
 			trace.WithBatchTimeout(time.Second)),
 	)
 	return traceProvider, nil
 }
 
-func CreateOpenTelemetryMeterProvider() (*metric.MeterProvider, error) {
-	metricExporter, err := stdoutmetric.New()
-	if err != nil {
-		return nil, err
-	}
+func CreateOpenTelemetryMeterProvider(
+	config *TracingConfig,
+) (*metric.MeterProvider, error) {
 
 	meterProvider := metric.NewMeterProvider(
-		metric.WithReader(metric.NewPeriodicReader(metricExporter,
+		metric.WithReader(metric.NewPeriodicReader(config.metricExporter,
 			// Default is 1m. Set to 3s for demonstrative purposes.
 			metric.WithInterval(3*time.Second))),
 	)

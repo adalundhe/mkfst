@@ -11,13 +11,12 @@ import (
 )
 
 type Config struct {
-	Host         string
-	Port         int
-	UseTelemetry bool
-	SkipDB       bool
-	UseHTTPS     bool
-	Database     db.ConnectionInfo
-	Spec         openapi.Info
+	Host     string
+	Port     int
+	SkipDB   bool
+	UseHTTPS bool
+	Database db.ConnectionInfo
+	Spec     openapi.Info
 }
 
 func (config *Config) getConfigHost(opts Config) *Config {
@@ -85,22 +84,6 @@ func (config *Config) getConfigSkipDB(opts Config) *Config {
 	return config
 }
 
-func (config *Config) getConfigUseTelemetry(opts Config) *Config {
-	if value, ok := os.LookupEnv("APP_USE_TELEMETRY"); ok {
-		useTelemetry, err := strconv.ParseBool(value)
-		if err != nil {
-			log.Fatal(err)
-		}
-		config.UseTelemetry = useTelemetry
-	}
-
-	if opts.UseTelemetry {
-		config.UseTelemetry = opts.UseTelemetry
-	}
-
-	return config
-}
-
 func (config *Config) ToAddress() string {
 	fmt.Print("PORT ", config.Port)
 	return fmt.Sprintf("%s:%d", config.Host, config.Port)
@@ -120,8 +103,6 @@ func Create(opts Config) Config {
 	).getConfigUseHTTPS(
 		opts,
 	).getConfigSkipDB(
-		opts,
-	).getConfigUseTelemetry(
 		opts,
 	)
 

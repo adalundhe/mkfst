@@ -5,23 +5,29 @@ import (
 	"log"
 
 	"go.opentelemetry.io/otel"
-	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type Context struct {
-	provider *sdktrace.TracerProvider
+	provider     *sdktrace.TracerProvider
+	UseTelemetry bool
 }
 
-func (otelctx *Context) Init() {
-	exporter, err := stdout.New(stdout.WithPrettyPrint())
-	if err != nil {
-		log.Fatal(err)
-	}
+type TracingConfig struct {
+	traceExporter  sdktrace.SpanExporter
+	metricExporter sdkmetric.Exporter
+	options        []sdktrace.BatchSpanProcessorOption
+}
+
+func (otelctx *Context) Init(config *TracingConfig) {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(
+			config.traceExporter,
+			config.options...,
+		),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))

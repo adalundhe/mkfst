@@ -19,6 +19,7 @@ type Service struct {
 	config config.Config
 	router *router.Router
 	spec   *openapi.Info
+	otel   *telemetry.Context
 }
 
 func Create(opts config.Config) Service {
@@ -33,6 +34,7 @@ func Create(opts config.Config) Service {
 	)
 
 	service.router = &router
+	service.otel.UseTelemetry = false
 
 	return service
 }
@@ -77,12 +79,19 @@ func (service *Service) GetDB() *sql.DB {
 	return service.router.Db.Conn
 }
 
+func (service *Service) ConfigureTracing(
+	config *telemetry.TracingConfig,
+) {
+	service.otel.Init(config)
+	service.otel.UseTelemetry = true
+
+}
+
 func (service *Service) Run() (err error) {
 
 	otel := telemetry.Context{}
 
-	if service.config.UseTelemetry {
-		otel.Init()
+	if service.otel.UseTelemetry {
 		defer otel.Close()
 	}
 
