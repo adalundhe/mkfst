@@ -2,17 +2,20 @@
 package auth
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/go-pkgz/rest"
+	"github.com/gin-gonic/gin"
 
 	"mkfst/auth/avatar"
 	"mkfst/auth/logger"
 	"mkfst/auth/provider"
 	"mkfst/auth/token"
+	"mkfst/tonic"
 )
 
 // Client is a type of auth client
@@ -21,8 +24,8 @@ type Client struct {
 	Csecret string
 }
 
-// Service provides higher level wrapper allowing to construct everything and get back token middleware
-type Service struct {
+// AuthService provides higher level wrapper allowing to construct everything and get back token middleware
+type AuthService struct {
 	logger         logger.L
 	opts           Opts
 	jwtService     *token.Service
@@ -33,7 +36,7 @@ type Service struct {
 	useGravatar    bool
 }
 
-// Opts is a full set of all parameters to initialize Service
+// Opts is a full set of all parameters to initialize AuthService
 type Opts struct {
 	SecretReader   token.Secret        // reader returns secret for given site id (aud), required
 	ClaimsUpd      token.ClaimsUpdater // updater for jwt to add/modify values stored in the token
@@ -73,9 +76,9 @@ type Opts struct {
 }
 
 // NewService initializes everything
-func NewService(opts Opts) (res *Service) {
+func NewService(opts Opts) (res *AuthService) {
 
-	res = &Service{
+	res = &AuthService{
 		opts:   opts,
 		logger: opts.Logger,
 		authMiddleware: Authenticator{
@@ -145,13 +148,15 @@ func NewService(opts Opts) (res *Service) {
 }
 
 // Handlers gets http.Handler for all providers and avatars
-func (s *Service) Handlers() (authHandler, avatarHandler http.Handler) {
+func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 
-	ah := func(w http.ResponseWriter, r *http.Request) {
-		elems := strings.Split(r.URL.Path, "/")
+	authorizationHandler := func(ctx *gin.Context, db *sql.DB) (gin.H, error) {
+		elems := strings.Split(ctx.Request.URL.Path, "/")
 		if len(elems) < 2 {
-			w.WriteHeader(http.StatusBadRequest)
-			return
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			err := errors.New("bad request")
+
+			return nil, err
 		}
 
 		// list all providers
@@ -160,69 +165,89 @@ func (s *Service) Handlers() (authHandler, avatarHandler http.Handler) {
 			for _, p := range s.providers {
 				list = append(list, p.Name())
 			}
-			rest.RenderJSON(w, list)
-			return
+
+			return gin.H{
+				"providers": list,
+			}, nil
 		}
 
 		// allow logout without specifying provider
 		if elems[len(elems)-1] == "logout" {
 			if len(s.providers) == 0 {
-				w.WriteHeader(http.StatusBadRequest)
-				rest.RenderJSON(w, rest.JSON{"error": "providers not defined"})
-				return
+				ctx.AbortWithStatus(http.StatusBadRequest)
+
+				errMsg := "providers not defined"
+
+				return gin.H{
+					"error": errMsg,
+				}, errors.New(errMsg)
 			}
-			s.providers[0].Handler(w, r)
-			return
+
+			s.providers[0].Handler(ctx.Writer, ctx.Request)
+
+			return nil, nil
 		}
 
 		// show user info
 		if elems[len(elems)-1] == "user" {
-			claims, _, err := s.jwtService.Get(r)
+			claims, _, err := s.jwtService.Get(ctx.Request)
 			if err != nil || claims.User == nil {
-				w.WriteHeader(http.StatusUnauthorized)
+				ctx.AbortWithStatus(http.StatusUnauthorized)
 				msg := "user is nil"
 				if err != nil {
 					msg = err.Error()
 				}
-				rest.RenderJSON(w, rest.JSON{"error": msg})
-				return
+				return gin.H{
+					"error": msg,
+				}, errors.New(msg)
 			}
-			rest.RenderJSON(w, claims.User)
-			return
+			return gin.H{
+				"claims": claims.User,
+			}, nil
 		}
 
 		// status of logged-in user
 		if elems[len(elems)-1] == "status" {
-			claims, _, err := s.jwtService.Get(r)
+			claims, _, err := s.jwtService.Get(ctx.Request)
 			if err != nil || claims.User == nil {
-				rest.RenderJSON(w, rest.JSON{"status": "not logged in"})
-				return
+
+				errMsg := "not logged in"
+				return gin.H{
+					"status": errMsg,
+				}, errors.New(errMsg)
 			}
-			rest.RenderJSON(w, rest.JSON{"status": "logged in", "user": claims.User.Name})
-			return
+			return gin.H{
+				"status": "Logged in",
+				"user":   claims.User.Name,
+			}, nil
 		}
 
 		// regular auth handlers
 		provName := elems[len(elems)-2]
 		p, err := s.Provider(provName)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			rest.RenderJSON(w, rest.JSON{"error": fmt.Sprintf("provider %s not supported", provName)})
-			return
+			ctx.AbortWithStatus(http.StatusBadRequest)
+
+			errMsg := fmt.Sprintf("provider %s not supported", provName)
+			return gin.H{
+				"error": errMsg,
+			}, errors.New(errMsg)
 		}
-		p.Handler(w, r)
+		p.Handler(ctx.Writer, ctx.Request)
+
+		return nil, nil
 	}
 
-	return http.HandlerFunc(ah), http.HandlerFunc(s.avatarProxy.Handler)
+	return tonic.Handler(authorizationHandler, nil, 200), tonic.Handler(s.avatarProxy.Handler, nil, 200)
 }
 
 // Middleware returns auth middleware
-func (s *Service) Middleware() Authenticator {
+func (s *AuthService) Middleware() Authenticator {
 	return s.authMiddleware
 }
 
 // AddProviderWithUserAttributes adds provider with user attributes mapping
-func (s *Service) AddProviderWithUserAttributes(name, cid, csecret string, userAttributes provider.UserAttributes) {
+func (s *AuthService) AddProviderWithUserAttributes(name, cid, csecret string, userAttributes provider.UserAttributes) {
 	p := provider.Params{
 		URL:            s.opts.URL,
 		JwtService:     s.jwtService,
@@ -236,7 +261,7 @@ func (s *Service) AddProviderWithUserAttributes(name, cid, csecret string, userA
 	s.addProvider(name, p)
 }
 
-func (s *Service) addProvider(name string, p provider.Params) {
+func (s *AuthService) addProvider(name string, p provider.Params) {
 	switch strings.ToLower(name) {
 	case "github":
 		s.providers = append(s.providers, provider.NewService(provider.NewGithub(p)))
@@ -264,7 +289,7 @@ func (s *Service) addProvider(name string, p provider.Params) {
 }
 
 // AddProvider adds provider for given name
-func (s *Service) AddProvider(name, cid, csecret string) {
+func (s *AuthService) AddProvider(name, cid, csecret string) {
 
 	p := provider.Params{
 		URL:            s.opts.URL,
@@ -281,7 +306,7 @@ func (s *Service) AddProvider(name, cid, csecret string) {
 }
 
 // AddDevProvider with a custom host and port
-func (s *Service) AddDevProvider(host string, port int) {
+func (s *AuthService) AddDevProvider(host string, port int) {
 	p := provider.Params{
 		URL:         s.opts.URL,
 		JwtService:  s.jwtService,
@@ -295,7 +320,7 @@ func (s *Service) AddDevProvider(host string, port int) {
 }
 
 // AddAppleProvider allow SignIn with Apple ID
-func (s *Service) AddAppleProvider(appleConfig provider.AppleConfig, privKeyLoader provider.PrivateKeyLoaderInterface) error {
+func (s *AuthService) AddAppleProvider(appleConfig provider.AppleConfig, privKeyLoader provider.PrivateKeyLoaderInterface) error {
 	p := provider.Params{
 		URL:         s.opts.URL,
 		JwtService:  s.jwtService,
@@ -315,7 +340,7 @@ func (s *Service) AddAppleProvider(appleConfig provider.AppleConfig, privKeyLoad
 }
 
 // AddCustomProvider adds custom provider (e.g. https://gopkg.in/oauth2.v3)
-func (s *Service) AddCustomProvider(name string, client Client, copts provider.CustomHandlerOpt) {
+func (s *AuthService) AddCustomProvider(name string, client Client, copts provider.CustomHandlerOpt) {
 	p := provider.Params{
 		URL:         s.opts.URL,
 		JwtService:  s.jwtService,
@@ -332,7 +357,7 @@ func (s *Service) AddCustomProvider(name string, client Client, copts provider.C
 
 // AddDirectProvider adds provider with direct check against data store
 // it doesn't do any handshake and uses provided credChecker to verify user and password from the request
-func (s *Service) AddDirectProvider(name string, credChecker provider.CredChecker) {
+func (s *AuthService) AddDirectProvider(name string, credChecker provider.CredChecker) {
 	dh := provider.DirectHandler{
 		L:            s.logger,
 		ProviderName: name,
@@ -348,7 +373,7 @@ func (s *Service) AddDirectProvider(name string, credChecker provider.CredChecke
 // AddDirectProviderWithUserIDFunc adds provider with direct check against data store and sets custom UserIDFunc allows
 // to modify user's ID on the client side.
 // it doesn't do any handshake and uses provided credChecker to verify user and password from the request
-func (s *Service) AddDirectProviderWithUserIDFunc(name string, credChecker provider.CredChecker, ufn provider.UserIDFunc) {
+func (s *AuthService) AddDirectProviderWithUserIDFunc(name string, credChecker provider.CredChecker, ufn provider.UserIDFunc) {
 	dh := provider.DirectHandler{
 		L:            s.logger,
 		ProviderName: name,
@@ -363,7 +388,7 @@ func (s *Service) AddDirectProviderWithUserIDFunc(name string, credChecker provi
 }
 
 // AddVerifProvider adds provider user's verification sent by sender
-func (s *Service) AddVerifProvider(name, msgTmpl string, sender provider.Sender) {
+func (s *AuthService) AddVerifProvider(name, msgTmpl string, sender provider.Sender) {
 	dh := provider.VerifyHandler{
 		L:            s.logger,
 		ProviderName: name,
@@ -379,13 +404,13 @@ func (s *Service) AddVerifProvider(name, msgTmpl string, sender provider.Sender)
 }
 
 // AddCustomHandler adds user-defined self-implemented handler of auth provider
-func (s *Service) AddCustomHandler(handler provider.Provider) {
+func (s *AuthService) AddCustomHandler(handler provider.Provider) {
 	s.providers = append(s.providers, provider.NewService(handler))
 	s.authMiddleware.Providers = s.providers
 }
 
 // DevAuth makes dev oauth2 server, for testing and development only!
-func (s *Service) DevAuth() (*provider.DevAuthServer, error) {
+func (s *AuthService) DevAuth() (*provider.DevAuthServer, error) {
 	p, err := s.Provider("dev") // peak dev provider
 	if err != nil {
 		return nil, fmt.Errorf("dev provider not registered: %w", err)
@@ -395,7 +420,7 @@ func (s *Service) DevAuth() (*provider.DevAuthServer, error) {
 }
 
 // Provider gets provider by name
-func (s *Service) Provider(name string) (provider.Service, error) {
+func (s *AuthService) Provider(name string) (provider.Service, error) {
 	for _, p := range s.providers {
 		if p.Name() == name {
 			return p, nil
@@ -405,16 +430,16 @@ func (s *Service) Provider(name string) (provider.Service, error) {
 }
 
 // Providers gets all registered providers
-func (s *Service) Providers() []provider.Service {
+func (s *AuthService) Providers() []provider.Service {
 	return s.providers
 }
 
-// TokenService returns token.Service
-func (s *Service) TokenService() *token.Service {
+// TokenService returns token.AuthService
+func (s *AuthService) TokenService() *token.Service {
 	return s.jwtService
 }
 
 // AvatarProxy returns stored in service
-func (s *Service) AvatarProxy() *avatar.Proxy {
+func (s *AuthService) AvatarProxy() *avatar.Proxy {
 	return s.avatarProxy
 }

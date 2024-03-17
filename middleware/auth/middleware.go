@@ -58,12 +58,12 @@ var adminUser = token.User{
 }
 
 // Auth middleware adds auth from session and populates user info
-func (a *Authenticator) AuthMiddleware(ctx *gin.Context, db *sql.DB) (any, error) {
+func (a *Authenticator) Auth(ctx *gin.Context, db *sql.DB) (any, error) {
 	return a.authorizeRequest(true)(ctx, db)
 }
 
 // Trace middleware doesn't require valid user but if user info presented populates info
-func (a *Authenticator) AuthTraceMiddleware(ctx *gin.Context, db *sql.DB) (any, error) {
+func (a *Authenticator) Trace(ctx *gin.Context, db *sql.DB) (any, error) {
 	return a.authorizeRequest(false)(ctx, db)
 }
 
