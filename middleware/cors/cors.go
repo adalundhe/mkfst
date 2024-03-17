@@ -1,6 +1,7 @@
 package cors
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -183,16 +184,18 @@ func DefaultConfig() Config {
 }
 
 // Default returns the location middleware with default configuration.
-func Default() gin.HandlerFunc {
+func Default() interface{} {
 	config := DefaultConfig()
 	config.AllowAllOrigins = true
 	return CORS(config)
 }
 
 // New returns the location middleware with user-defined custom configuration.
-func CORS(config Config) gin.HandlerFunc {
+func CORS(config Config) interface{} {
 	cors := newCors(config)
-	return func(c *gin.Context) {
+	return func(c *gin.Context, db *sql.DB) (any, error) {
 		cors.applyCors(c)
+
+		return nil, nil
 	}
 }
