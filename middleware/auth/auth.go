@@ -15,7 +15,6 @@ import (
 	"mkfst/auth/logger"
 	"mkfst/auth/provider"
 	"mkfst/auth/token"
-	"mkfst/tonic"
 )
 
 // Client is a type of auth client
@@ -151,16 +150,13 @@ func NewService(opts Opts) (res *AuthService) {
 func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 
 	authorizationHandler := func(ctx *gin.Context, db *sql.DB) (gin.H, error) {
-		elems := strings.Split(ctx.Request.URL.Path, "/")
-		if len(elems) < 2 {
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			err := errors.New("bad request")
-
-			return nil, err
+		action := ctx.Query("action")
+		if action == "" {
+			action = "login"
 		}
 
 		// list all providers
-		if elems[len(elems)-1] == "list" {
+		if action == "list" {
 			list := []string{}
 			for _, p := range s.providers {
 				list = append(list, p.Name())
@@ -172,7 +168,7 @@ func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 		}
 
 		// allow logout without specifying provider
-		if elems[len(elems)-1] == "logout" {
+		if action == "logout" {
 			if len(s.providers) == 0 {
 				ctx.AbortWithStatus(http.StatusBadRequest)
 
@@ -189,7 +185,7 @@ func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 		}
 
 		// show user info
-		if elems[len(elems)-1] == "user" {
+		if action == "user" {
 			claims, _, err := s.jwtService.Get(ctx.Request)
 			if err != nil || claims.User == nil {
 				ctx.AbortWithStatus(http.StatusUnauthorized)
@@ -207,7 +203,7 @@ func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 		}
 
 		// status of logged-in user
-		if elems[len(elems)-1] == "status" {
+		if action == "status" {
 			claims, _, err := s.jwtService.Get(ctx.Request)
 			if err != nil || claims.User == nil {
 
@@ -223,22 +219,32 @@ func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 		}
 
 		// regular auth handlers
-		provName := elems[len(elems)-2]
-		p, err := s.Provider(provName)
-		if err != nil {
+		providerName := ctx.Query("using")
+		if providerName == "" {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 
-			errMsg := fmt.Sprintf("provider %s not supported", provName)
+			errMsg := "provider not specified"
 			return gin.H{
 				"error": errMsg,
 			}, errors.New(errMsg)
 		}
+
+		p, err := s.Provider(providerName)
+		if err != nil {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+
+			errMsg := fmt.Sprintf("provider %s not supported", providerName)
+			return gin.H{
+				"error": errMsg,
+			}, errors.New(errMsg)
+		}
+
 		p.Handler(ctx.Writer, ctx.Request)
 
 		return nil, nil
 	}
 
-	return tonic.Handler(authorizationHandler, nil, 200), tonic.Handler(s.avatarProxy.Handler, nil, 200)
+	return authorizationHandler, s.avatarProxy.Handler
 }
 
 // Middleware returns auth middleware

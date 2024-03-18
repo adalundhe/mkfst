@@ -75,6 +75,7 @@ func (a *Authenticator) authorizeRequest(
 ) (any, error) {
 
 	return func(ctx *gin.Context, _ *sql.DB) (any, error) {
+
 		// use admin user basic auth if enabled but ignore when BasicAuthChecker defined
 		if a.BasicAuthChecker == nil && a.basicAdminUser(ctx.Request) {
 			ctx.Request = token.SetUserInfo(ctx.Request, adminUser)

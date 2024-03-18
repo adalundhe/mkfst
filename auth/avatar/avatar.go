@@ -5,7 +5,9 @@ package avatar
 import (
 	"bytes"
 	"crypto/md5" //nolint gosec
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -15,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-pkgz/rest"
+	"github.com/gin-gonic/gin"
 	"github.com/rrivera/identicon"
 	"golang.org/x/image/draw"
 
@@ -99,35 +101,48 @@ func (p *Proxy) load(url string, client *http.Client) (rc io.ReadCloser, err err
 }
 
 // Handler returns token routes for given provider
-func (p *Proxy) Handler(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) Handler(
+	ctx *gin.Context,
+	db *sql.DB,
+) (any, error) {
 
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+	if ctx.Request.Method != "GET" {
+		ctx.AbortWithStatus(http.StatusMethodNotAllowed)
 	}
-	elems := strings.Split(r.URL.Path, "/")
+	elems := strings.Split(ctx.Request.URL.Path, "/")
 	avatarID := elems[len(elems)-1]
 	if !reValidAvatarID.MatchString(avatarID) {
-		rest.SendErrorJSON(w, r, p.L, http.StatusForbidden, fmt.Errorf("invalid avatar id from %s", r.URL.Path), "can't load avatar")
-		return
+		ctx.AbortWithStatus(http.StatusForbidden)
+		errMsg := fmt.Sprintf("invalid avatar id from %s", ctx.Request.URL.Path)
+		return gin.H{
+			"error": errMsg,
+		}, errors.New(errMsg)
 	}
 
 	// enforce client-side caching
 	etag := `"` + p.Store.ID(avatarID) + `"`
-	w.Header().Set("Etag", etag)
-	w.Header().Set("Cache-Control", "max-age=604800") // 7 days
-	if match := r.Header.Get("If-None-Match"); match != "" {
+
+	ctx.Header("Etag", etag)
+	ctx.Header("Cache-Control", "max-age=604800")
+
+	if match := ctx.Request.Header.Get("If-None-Match"); match != "" {
 		etag = strings.TrimPrefix(etag, `"`)
 		etag = strings.TrimSuffix(etag, `"`)
 		if match == etag {
-			w.WriteHeader(http.StatusNotModified)
-			return
+			ctx.Status(http.StatusNotModified)
+			return nil, nil
 		}
 	}
 
 	avReader, size, err := p.Store.Get(avatarID)
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusBadRequest, err, "can't load avatar")
-		return
+		ctx.AbortWithStatus(http.StatusBadRequest)
+
+		errMsg := fmt.Sprintf("can't load avatar: %s", err.Error())
+
+		return gin.H{
+			"error": errMsg,
+		}, errors.New(errMsg)
 	}
 
 	defer func() {
@@ -136,12 +151,15 @@ func (p *Proxy) Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	w.Header().Set("Content-Type", "image/*")
-	w.Header().Set("Content-Length", strconv.Itoa(size))
-	w.WriteHeader(http.StatusOK)
-	if _, err = io.Copy(w, avReader); err != nil {
-		p.Logf("[WARN] can't send response to %s, %s", r.RemoteAddr, err)
+	ctx.Header("Content-Type", "image/*")
+	ctx.Header("Content-Length", strconv.Itoa(size))
+	ctx.Status(http.StatusOK)
+
+	if _, err = io.Copy(ctx.Writer, avReader); err != nil {
+		p.Logf("[WARN] can't send response to %s, %s", ctx.Request.RemoteAddr, err)
 	}
+
+	return nil, nil
 }
 
 // resize an image of supported format (PNG, JPG, GIF) to the size of "limit" px of the biggest side
