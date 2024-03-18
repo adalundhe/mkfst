@@ -3,11 +3,13 @@ package provider
 import (
 	"crypto/rand"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"mkfst/auth/token"
+
+	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -48,25 +50,40 @@ type Provider interface {
 }
 
 // Handler returns auth routes for given provider
-func (p Service) Handler(w http.ResponseWriter, r *http.Request) {
+func (p Service) Handler(ctx *gin.Context) (gin.H, error) {
 
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodPost {
+
+		ctx.AbortWithStatus(http.StatusMethodNotAllowed)
+		errMsg := "method not allowed"
+		return gin.H{
+			"error": errMsg,
+		}, errors.New(errMsg)
 	}
-	if strings.HasSuffix(r.URL.Path, urlLoginSuffix) {
-		p.LoginHandler(w, r)
-		return
+
+	action := ctx.Query("action")
+
+	switch action {
+	case "login":
+		p.LoginHandler(ctx.Writer, ctx.Request)
+		return nil, nil
+
+	case "callback":
+		p.AuthHandler(ctx.Writer, ctx.Request)
+		return nil, nil
+
+	case "logout":
+		p.LogoutHandler(ctx.Writer, ctx.Request)
+		return nil, nil
+
+	default:
+		ctx.AbortWithStatus(http.StatusNotFound)
+		errMsg := "invalid action"
+		return gin.H{
+			"error": errMsg,
+		}, errors.New(errMsg)
 	}
-	if strings.HasSuffix(r.URL.Path, urlCallbackSuffix) {
-		p.AuthHandler(w, r)
-		return
-	}
-	if strings.HasSuffix(r.URL.Path, urlLogoutSuffix) {
-		p.LogoutHandler(w, r)
-		return
-	}
-	w.WriteHeader(http.StatusNotFound)
+
 }
 
 // setAvatar saves avatar and puts proxied URL to u.Picture

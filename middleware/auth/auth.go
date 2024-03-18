@@ -179,7 +179,7 @@ func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 				}, errors.New(errMsg)
 			}
 
-			s.providers[0].Handler(ctx.Writer, ctx.Request)
+			s.providers[0].Handler(ctx)
 
 			return nil, nil
 		}
@@ -239,9 +239,9 @@ func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 			}, errors.New(errMsg)
 		}
 
-		p.Handler(ctx.Writer, ctx.Request)
+		res, err := p.Handler(ctx)
 
-		return nil, nil
+		return res, err
 	}
 
 	return authorizationHandler, s.avatarProxy.Handler
