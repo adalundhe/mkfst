@@ -1,0 +1,20 @@
+{
+  "name": "mkfst-stack",
+  "version": "0.1.0",
+  "description": "Stack interaction primitives — runOneShot, exec, address",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "mkfst": {
+    "capabilities": {
+      "stack.runOneShot": { "imageAllowList": ["*"] },
+      "stack.exec":       { "serviceAllowList": ["*"] },
+      "stack.address":    { "serviceAllowList": ["*"] },
+      "log":              true
+    },
+    "exposes": ["stack"]
+  }
+}

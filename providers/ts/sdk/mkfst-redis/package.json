@@ -1,0 +1,17 @@
+{
+  "name": "mkfst-redis",
+  "version": "0.1.0",
+  "description": "Redis interaction wrapper using stack.exec(redis-cli ...)",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "mkfst": {
+    "capabilities": {
+      "stack.exec": { "serviceAllowList": ["*"], "cmdRegex": "^redis-cli" }
+    },
+    "exposes": ["redis"]
+  }
+}

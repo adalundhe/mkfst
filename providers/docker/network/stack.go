@@ -156,6 +156,9 @@ type Stack struct {
 	// failed and we're running without DNS-layer egress
 	// enforcement).
 	dns *dnsResolver
+
+	// oneShotSem caps concurrent RunOneShot calls. nil = unlimited.
+	oneShotSem chan struct{}
 }
 
 // containerInstance holds a created container's identity + per-instance
