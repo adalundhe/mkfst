@@ -124,9 +124,11 @@ func TestBundle_RejectsPrototypePollution(t *testing.T) {
 			want: "setPrototypeOf",
 		},
 		{
+			// esbuild itself rejects `with` in ESM modules — our
+			// AST check is defense in depth and doesn't fire here.
 			name: "with statement",
 			src:  `import { defineDAG } from "@mkfst/sdk"; with (Math) { } export default defineDAG("x", b => {});`,
-			want: "with",
+			want: "With statements",
 		},
 		{
 			name: "constructor reach-around",
@@ -134,9 +136,12 @@ func TestBundle_RejectsPrototypePollution(t *testing.T) {
 			want: "constructor",
 		},
 		{
+			// "fs" isn't allowlisted, so the allowlist plugin fires
+			// before our AST check ever runs. Either rejection
+			// path is acceptable; we assert allowlist's wording.
 			name: "require call",
 			src:  `import { defineDAG } from "@mkfst/sdk"; require("fs"); export default defineDAG("x", b => {});`,
-			want: "require",
+			want: "allowlist",
 		},
 	}
 	for _, tc := range cases {
