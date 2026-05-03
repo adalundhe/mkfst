@@ -1203,16 +1203,35 @@ func (s *Stack) tearDown(ctx context.Context, preserveState bool) error {
 		dns.stop()
 	}
 
-	// 2. Signal background goroutines (liveness loops) to exit.
+	// 2. Signal background goroutines (liveness loops, restart
+	//    watchers) to exit, then join. Surface any errgroup error
+	//    via Monitor for diagnostics — we still proceed with
+	//    teardown either way (Down's job is to make resources go
+	//    away, not to roll back on bg-task failure).
 	s.mu.Lock()
 	close(s.stopCh)
 	s.mu.Unlock()
-	_ = s.bg.Wait()
+	if bgErr := s.bg.Wait(); bgErr != nil && s.monitor != nil {
+		s.monitor.emit(Event{
+			Kind:  EventInternalError,
+			At:    time.Now(),
+			Error: "bg goroutine error during Down: " + bgErr.Error(),
+		})
+	}
 
 	// 3. Stop containers in reverse order. PreStop hooks first.
 	s.mu.RLock()
-	order, _ := s.topologicalOrderLocked()
+	order, orderErr := s.topologicalOrderLocked()
 	s.mu.RUnlock()
+	if orderErr != nil && s.monitor != nil {
+		// DAG has gone weird (shouldn't happen post-Up). Surface
+		// it; we proceed with the partial order so we still
+		// release as many containers as we can identify.
+		s.monitor.emit(Event{
+			Kind: EventInternalError, At: time.Now(),
+			Error: "topological order error during Down: " + orderErr.Error(),
+		})
+	}
 	for i := len(order) - 1; i >= 0; i-- {
 		name := order[i]
 		s.mu.RLock()
@@ -1220,7 +1239,19 @@ func (s *Stack) tearDown(ctx context.Context, preserveState bool) error {
 		insts := s.containers[name]
 		s.mu.RUnlock()
 		for _, inst := range insts {
-			_ = s.fireHooks(ctx, svc.preStop, svc, inst) // best-effort
+			if hookErr := s.fireHooks(ctx, svc.preStop, svc, inst); hookErr != nil && s.monitor != nil {
+				// PreStop is best-effort by design (we still want
+				// to stop the container even if the hook fails),
+				// but the failure deserves visibility.
+				s.monitor.emit(Event{
+					Kind:        EventInternalError,
+					At:          time.Now(),
+					Service:     svc.name,
+					Replica:     inst.replica,
+					ContainerID: inst.id,
+					Error:       "preStop hook: " + hookErr.Error(),
+				})
+			}
 			t := svc.stopTimeout
 			if t <= 0 {
 				t = s.stopTimeoutDefault

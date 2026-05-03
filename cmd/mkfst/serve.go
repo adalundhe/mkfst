@@ -129,7 +129,12 @@ func runServe(args []string) {
 	if err != nil {
 		fatal("serve: workflow engine: " + err.Error())
 	}
-	go func() { _ = worker.Run(ctx) }()
+	// Track the worker goroutine via a wait channel so shutdown
+	// can join cleanly. worker.Run returns nil on clean shutdown
+	// (ctx cancel) — any other error is unexpected and worth
+	// surfacing to stderr.
+	workerDone := make(chan error, 1)
+	go func() { workerDone <- worker.Run(ctx) }()
 
 	// 6. Bridge + stack resolver.
 	resolver := ts.NewMapStackResolver()
@@ -180,7 +185,9 @@ func runServe(args []string) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// 9. mTLS if configured.
+	// 9. mTLS if configured. Track the HTTP server's lifecycle
+	//    via serverErrCh so shutdown can join cleanly.
+	var serverErrCh chan error
 	if cfg.Server.TLS.Cert != "" && cfg.Server.TLS.Key != "" {
 		tlsCfg := &tls.Config{
 			MinVersion: tls.VersionTLS12,
@@ -202,34 +209,67 @@ func runServe(args []string) {
 		httpSrv.TLSConfig = tlsCfg
 		fmt.Printf("mkfst: listening on https://%s (mTLS=%v)\n",
 			cfg.Server.Listen, tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert)
+		httpDone := make(chan error, 1)
 		go func() {
-			if err := httpSrv.ListenAndServeTLS(cfg.Server.TLS.Cert, cfg.Server.TLS.Key); err != nil && err != http.ErrServerClosed {
-				fmt.Fprintln(os.Stderr, "serve: ListenAndServeTLS:", err)
-				os.Exit(1)
+			err := httpSrv.ListenAndServeTLS(cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
+			if err != http.ErrServerClosed {
+				httpDone <- err
+			} else {
+				httpDone <- nil
 			}
 		}()
+		serverErrCh = httpDone
 	} else {
 		fmt.Printf("mkfst: listening on http://%s\n", cfg.Server.Listen)
+		httpDone := make(chan error, 1)
 		go func() {
-			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				fmt.Fprintln(os.Stderr, "serve: ListenAndServe:", err)
-				os.Exit(1)
+			err := httpSrv.ListenAndServe()
+			if err != http.ErrServerClosed {
+				httpDone <- err
+			} else {
+				httpDone <- nil
 			}
 		}()
+		serverErrCh = httpDone
 	}
 
-	// 10. Wait for signal.
+	// 10. Wait for signal OR an early HTTP server failure.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	fmt.Fprintln(os.Stderr, "mkfst: shutting down")
+	select {
+	case <-sigCh:
+		fmt.Fprintln(os.Stderr, "mkfst: signal received, shutting down")
+	case err := <-serverErrCh:
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "serve: HTTP server failed:", err)
+		}
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
-	_ = httpSrv.Shutdown(shutdownCtx)
-	for _, s := range netEng.Stacks() {
-		_ = s.Down(shutdownCtx)
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintln(os.Stderr, "serve: http shutdown:", err)
 	}
-	_ = netEng.Close(shutdownCtx)
+	for _, s := range netEng.Stacks() {
+		if err := s.Down(shutdownCtx); err != nil {
+			fmt.Fprintln(os.Stderr, "serve: stack down:", s.Name(), err)
+		}
+	}
+	if err := netEng.Close(shutdownCtx); err != nil {
+		fmt.Fprintln(os.Stderr, "serve: network engine close:", err)
+	}
+	// Cancel parent ctx to terminate the worker, then join it.
+	cancel()
+	if err := <-workerDone; err != nil {
+		fmt.Fprintln(os.Stderr, "serve: worker exit:", err)
+	}
+	// Drain serverErrCh if signal-shutdown beat the server failure.
+	select {
+	case err := <-serverErrCh:
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "serve: HTTP server post-shutdown:", err)
+		}
+	default:
+	}
 }
 
 // === stack subcommands ===

@@ -31,6 +31,11 @@ const (
 	EventServiceRestarted
 	EventStackUp
 	EventStackDown
+	// EventInternalError is for non-connection-related background
+	// errors that the stack handled but operators should see —
+	// errgroup failures, hook errors during teardown,
+	// best-effort cleanup failures, etc.
+	EventInternalError
 )
 
 // Event is one observed thing.
