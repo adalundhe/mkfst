@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
@@ -113,14 +114,22 @@ func (e *Engine) Adopt(ctx context.Context, opts AdoptOpts) (AdoptResult, error)
 // Reap removes every mkfst-network-labeled resource that matches the
 // filter. Use with care — this destroys containers and networks
 // belonging to other engine instances.
+//
+// Per-resource failures are aggregated and returned as a joined
+// error so the caller sees every individual reap failure, not just
+// the first or none. The return is nil only when every container
+// and network was successfully removed.
 func (e *Engine) Reap(ctx context.Context, opts AdoptOpts) error {
+	var errs []error
 	// Containers first (so the network can be removed afterward).
 	ctrs, err := e.listContainersByLabel(ctx, opts.EngineID, opts.StackID, "")
 	if err != nil {
 		return fmt.Errorf("Reap: list containers: %w", err)
 	}
 	for _, c := range ctrs {
-		_ = e.cli.ContainerRemove(ctx, c.ID, dockercontainer.RemoveOptions{Force: true})
+		if rmErr := e.cli.ContainerRemove(ctx, c.ID, dockercontainer.RemoveOptions{Force: true}); rmErr != nil {
+			errs = append(errs, fmt.Errorf("remove container %s: %w", c.ID, rmErr))
+		}
 	}
 	// Networks.
 	netFilter := map[string]string{LabelManagedBy: "mkfst-network"}
@@ -135,7 +144,12 @@ func (e *Engine) Reap(ctx context.Context, opts AdoptOpts) error {
 		return fmt.Errorf("Reap: list networks: %w", err)
 	}
 	for _, n := range netws {
-		_ = n.Remove(ctx)
+		if rmErr := n.Remove(ctx); rmErr != nil {
+			errs = append(errs, fmt.Errorf("remove network %s: %w", n.Name(), rmErr))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("Reap: %d failures: %w", len(errs), errors.Join(errs...))
 	}
 	return nil
 }

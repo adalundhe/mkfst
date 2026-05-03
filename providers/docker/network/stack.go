@@ -1257,13 +1257,23 @@ func (s *Stack) tearDown(ctx context.Context, preserveState bool) error {
 				t = s.stopTimeoutDefault
 			}
 			seconds := int(t.Seconds())
-			_ = retry(ctx, RetryOpts{IsRetryable: IsRetryableDocker}, func(ctx context.Context) error {
+			if stopErr := retry(ctx, RetryOpts{IsRetryable: IsRetryableDocker}, func(ctx context.Context) error {
 				err := s.engine.cli.ContainerStop(ctx, inst.id, dockercontainer.StopOptions{Timeout: &seconds})
 				if err != nil && isNotFoundError(err) {
 					return nil
 				}
 				return err
-			})
+			}); stopErr != nil && s.monitor != nil {
+				// Stop failed despite retries — surface for ops.
+				s.monitor.emit(Event{
+					Kind:        EventInternalError,
+					At:          time.Now(),
+					Service:     svc.name,
+					Replica:     inst.replica,
+					ContainerID: inst.id,
+					Error:       "ContainerStop: " + stopErr.Error(),
+				})
+			}
 		}
 	}
 
@@ -1271,15 +1281,25 @@ func (s *Stack) tearDown(ctx context.Context, preserveState bool) error {
 	for _, name := range order {
 		s.mu.RLock()
 		insts := s.containers[name]
+		svc := s.services[name]
 		s.mu.RUnlock()
 		for _, inst := range insts {
-			_ = retry(ctx, RetryOpts{IsRetryable: IsRetryableDocker}, func(ctx context.Context) error {
+			if rmErr := retry(ctx, RetryOpts{IsRetryable: IsRetryableDocker}, func(ctx context.Context) error {
 				err := s.engine.cli.ContainerRemove(ctx, inst.id, dockercontainer.RemoveOptions{Force: true, RemoveVolumes: false})
 				if err != nil && isNotFoundError(err) {
 					return nil
 				}
 				return err
-			})
+			}); rmErr != nil && s.monitor != nil {
+				s.monitor.emit(Event{
+					Kind:        EventInternalError,
+					At:          time.Now(),
+					Service:     svc.name,
+					Replica:     inst.replica,
+					ContainerID: inst.id,
+					Error:       "ContainerRemove: " + rmErr.Error(),
+				})
+			}
 		}
 	}
 

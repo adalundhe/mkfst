@@ -111,7 +111,15 @@ func (r *dnsResolver) udpLoop() {
 			continue
 		}
 		query := append([]byte(nil), buf[:n]...)
-		go r.handleUDPQuery(query, src)
+		// Track per-query goroutines in the resolver wg so stop()
+		// joins them deterministically. Each query has its own
+		// short timeout (3s upstream lookup), so worst-case
+		// shutdown blocks ~3s on in-flight queries.
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.handleUDPQuery(query, src)
+		}()
 	}
 }
 
@@ -133,7 +141,11 @@ func (r *dnsResolver) tcpLoop() {
 			}
 			continue
 		}
-		go r.handleTCPQuery(conn)
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.handleTCPQuery(conn)
+		}()
 	}
 }
 

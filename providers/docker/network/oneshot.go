@@ -209,13 +209,29 @@ func (s *Stack) RunOneShot(ctx context.Context, opts OneShotOpts) (*OneShotResul
 		_ = hijack.CloseWrite()
 	}
 
-	// Read demuxed stdout+stderr.
+	// Read demuxed stdout+stderr in a tracked goroutine so every
+	// return path joins it before exiting (no leaks even on
+	// ctx-cancel or wait-error).
 	var stdout, stderr bytes.Buffer
 	logsDone := make(chan error, 1)
 	go func() {
 		_, err := demuxDockerStream(&stdout, &stderr, hijack.Reader)
 		logsDone <- err
 	}()
+	// joinLogs is the canonical single-place wait — it triggers
+	// hijack.Close (already deferred) so demuxDockerStream returns
+	// and the goroutine exits.
+	joinLogs := func() {
+		// hijack is already closed by the parent defer; we just
+		// wait for the goroutine's send.
+		select {
+		case <-logsDone:
+		case <-time.After(5 * time.Second):
+			// hard ceiling: if demux is genuinely stuck, we don't
+			// hang the caller indefinitely.
+		}
+	}
+	defer joinLogs()
 
 	// Wait for exit.
 	statusCh, errCh := s.engine.cli.ContainerWait(ctx, created.ID, dockercontainer.WaitConditionNotRunning)
@@ -233,7 +249,6 @@ func (s *Stack) RunOneShot(ctx context.Context, opts OneShotOpts) (*OneShotResul
 			return nil, fmt.Errorf("RunOneShot container error: %s", status.Error.Message)
 		}
 	}
-	<-logsDone
 
 	return &OneShotResult{
 		ContainerID: created.ID,
