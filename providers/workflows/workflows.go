@@ -99,19 +99,20 @@ func (d *Definition) Name() string { return d.name }
 // dependencies, failure policy, etc.
 //
 // Returns a NodeRef so subsequent Add calls can express dependencies
-// by reference rather than by string lookup.
+// by reference rather than by string lookup. For Go code paths
+// where the definition shape is statically known correct, MustAdd
+// gives the same call ergonomics with panic-on-error.
 //
-// Panics on programmer errors (empty name, duplicate name) — same
-// pattern as tonic's registration: definition building is a startup
-// activity, not a runtime path.
-func (d *Definition) Add(nodeName string, opts ...NodeOption) *NodeRef {
+// Returns an error on programmer errors (empty name, duplicate
+// name).
+func (d *Definition) Add(nodeName string, opts ...NodeOption) (*NodeRef, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if nodeName == "" {
-		panic("workflows.Add: nodeName must not be empty")
+		return nil, errors.New("workflows.Add: nodeName must not be empty")
 	}
 	if _, exists := d.nodes[nodeName]; exists {
-		panic(fmt.Sprintf("workflows.Add: node %q already declared in workflow %q", nodeName, d.name))
+		return nil, fmt.Errorf("workflows.Add: node %q already declared in workflow %q", nodeName, d.name)
 	}
 	n := &node{name: nodeName, failure: FailHaltWorkflow}
 	for _, opt := range opts {
@@ -119,7 +120,18 @@ func (d *Definition) Add(nodeName string, opts ...NodeOption) *NodeRef {
 	}
 	d.nodes[nodeName] = n
 	d.order = append(d.order, nodeName)
-	return &NodeRef{def: d, name: nodeName}
+	return &NodeRef{def: d, name: nodeName}, nil
+}
+
+// MustAdd is the panic-on-error variant for definition-building
+// code that knows its shape is correct (tests, workflow builders
+// where invariants are externally enforced).
+func (d *Definition) MustAdd(nodeName string, opts ...NodeOption) *NodeRef {
+	ref, err := d.Add(nodeName, opts...)
+	if err != nil {
+		panic(err)
+	}
+	return ref
 }
 
 // NodeOption is a functional option for Definition.Add.

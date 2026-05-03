@@ -272,7 +272,11 @@ func (e *Engine) SubmitWith(ctx context.Context, opts SubmitOpts) (*Workflow, er
 		default:
 			opts = append(opts, workflows.OnFail(workflows.FailHaltWorkflow))
 		}
-		ref := def.Add(nodeName, opts...)
+		ref, addErr := def.Add(nodeName, opts...)
+		if addErr != nil {
+			_ = rtInst.Close(ctx)
+			return nil, fmt.Errorf("definition Add %q: %w", nodeName, addErr)
+		}
 		nodeRefs[node.NodeID] = ref
 	}
 	if err := e.wfEng.Register(def); err != nil {

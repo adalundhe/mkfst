@@ -61,9 +61,9 @@ func TestWorkflowsDockerLinearChain(t *testing.T) {
 
 	// Definition: emit → upper → suffix.
 	def := workflows.New("docker-chain")
-	emit := def.Add("emit", workflows.OfType("docker.emit"))
-	upper := def.Add("upper", workflows.OfType("docker.upper"), workflows.DependsOn(emit))
-	def.Add("suffix", workflows.OfType("docker.suffix"), workflows.DependsOn(upper))
+	emit := def.MustAdd("emit", workflows.OfType("docker.emit"))
+	upper := def.MustAdd("upper", workflows.OfType("docker.upper"), workflows.DependsOn(emit))
+	def.MustAdd("suffix", workflows.OfType("docker.suffix"), workflows.DependsOn(upper))
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -197,10 +197,10 @@ func TestWorkflowsDockerDiamondFanIn(t *testing.T) {
 	}
 
 	def := workflows.New("docker-diamond")
-	emit := def.Add("emit", workflows.OfType("docker.emit"))
-	upper := def.Add("uppercase", workflows.OfType("docker.upper"), workflows.DependsOn(emit))
-	rev := def.Add("reverse", workflows.OfType("docker.reverse"), workflows.DependsOn(emit))
-	def.Add("concat", workflows.OfType("docker.concat"), workflows.DependsOn(upper, rev))
+	emit := def.MustAdd("emit", workflows.OfType("docker.emit"))
+	upper := def.MustAdd("uppercase", workflows.OfType("docker.upper"), workflows.DependsOn(emit))
+	rev := def.MustAdd("reverse", workflows.OfType("docker.reverse"), workflows.DependsOn(emit))
+	def.MustAdd("concat", workflows.OfType("docker.concat"), workflows.DependsOn(upper, rev))
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}

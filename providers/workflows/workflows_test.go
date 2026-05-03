@@ -21,18 +21,18 @@ func TestDefinition_AddPanicsOnEmpty(t *testing.T) {
 			t.Fatal("expected panic on empty node name")
 		}
 	}()
-	New("wf").Add("")
+	New("wf").MustAdd("")
 }
 
 func TestDefinition_AddPanicsOnDuplicate(t *testing.T) {
 	d := New("wf")
-	d.Add("a", OfType("t"))
+	d.MustAdd("a", OfType("t"))
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on duplicate")
 		}
 	}()
-	d.Add("a", OfType("t"))
+	d.MustAdd("a", OfType("t"))
 }
 
 func TestDefinition_ValidateEmpty(t *testing.T) {
@@ -43,7 +43,7 @@ func TestDefinition_ValidateEmpty(t *testing.T) {
 
 func TestDefinition_ValidateMissingType(t *testing.T) {
 	d := New("wf")
-	d.Add("a")
+	d.MustAdd("a")
 	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "OfType") {
 		t.Fatalf("expected missing OfType error, got %v", err)
 	}
@@ -51,7 +51,7 @@ func TestDefinition_ValidateMissingType(t *testing.T) {
 
 func TestDefinition_ValidateUnknownParent(t *testing.T) {
 	d := New("wf")
-	d.Add("a", OfType("t"), DependsOnByName("ghost"))
+	d.MustAdd("a", OfType("t"), DependsOnByName("ghost"))
 	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("expected unknown parent error, got %v", err)
 	}
@@ -59,7 +59,7 @@ func TestDefinition_ValidateUnknownParent(t *testing.T) {
 
 func TestDefinition_ValidateSelfLoop(t *testing.T) {
 	d := New("wf")
-	d.Add("a", OfType("t"), DependsOnByName("a"))
+	d.MustAdd("a", OfType("t"), DependsOnByName("a"))
 	if err := d.Validate(); err == nil {
 		t.Fatal("expected self-loop error")
 	}
@@ -67,9 +67,9 @@ func TestDefinition_ValidateSelfLoop(t *testing.T) {
 
 func TestDefinition_ValidateCycle(t *testing.T) {
 	d := New("wf")
-	d.Add("a", OfType("t"), DependsOnByName("c"))
-	d.Add("b", OfType("t"), DependsOnByName("a"))
-	d.Add("c", OfType("t"), DependsOnByName("b"))
+	d.MustAdd("a", OfType("t"), DependsOnByName("c"))
+	d.MustAdd("b", OfType("t"), DependsOnByName("a"))
+	d.MustAdd("c", OfType("t"), DependsOnByName("b"))
 	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("expected cycle error, got %v", err)
 	}
@@ -77,9 +77,9 @@ func TestDefinition_ValidateCycle(t *testing.T) {
 
 func TestDefinition_ValidateOK(t *testing.T) {
 	d := New("wf")
-	a := d.Add("a", OfType("t"))
-	b := d.Add("b", OfType("t"), DependsOn(a))
-	d.Add("c", OfType("t"), DependsOn(a, b))
+	a := d.MustAdd("a", OfType("t"))
+	b := d.MustAdd("b", OfType("t"), DependsOn(a))
+	d.MustAdd("c", OfType("t"), DependsOn(a, b))
 	if err := d.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -87,9 +87,9 @@ func TestDefinition_ValidateOK(t *testing.T) {
 
 func TestDefinition_RootsAndChildren(t *testing.T) {
 	d := New("wf")
-	a := d.Add("a", OfType("t"))
-	b := d.Add("b", OfType("t"))
-	d.Add("c", OfType("t"), DependsOn(a, b))
+	a := d.MustAdd("a", OfType("t"))
+	b := d.MustAdd("b", OfType("t"))
+	d.MustAdd("c", OfType("t"), DependsOn(a, b))
 	roots := d.roots()
 	if len(roots) != 2 || roots[0] != "a" || roots[1] != "b" {
 		t.Fatalf("unexpected roots: %v", roots)
@@ -102,10 +102,10 @@ func TestDefinition_RootsAndChildren(t *testing.T) {
 
 func TestDefinition_Descendants(t *testing.T) {
 	d := New("wf")
-	a := d.Add("a", OfType("t"))
-	b := d.Add("b", OfType("t"), DependsOn(a))
-	c := d.Add("c", OfType("t"), DependsOn(b))
-	d.Add("d", OfType("t"), DependsOn(c))
+	a := d.MustAdd("a", OfType("t"))
+	b := d.MustAdd("b", OfType("t"), DependsOn(a))
+	c := d.MustAdd("c", OfType("t"), DependsOn(b))
+	d.MustAdd("d", OfType("t"), DependsOn(c))
 	desc := d.descendants("a")
 	if len(desc) != 3 {
 		t.Fatalf("expected 3 descendants, got %v", desc)
@@ -176,9 +176,9 @@ func TestEngine_LinearChain(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 
 	def := New("linear")
-	a := def.Add("a", OfType("step"))
-	b := def.Add("b", OfType("step"), DependsOn(a))
-	def.Add("c", OfType("step"), DependsOn(b))
+	a := def.MustAdd("a", OfType("step"))
+	b := def.MustAdd("b", OfType("step"), DependsOn(a))
+	def.MustAdd("c", OfType("step"), DependsOn(b))
 
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -242,10 +242,10 @@ func TestEngine_Diamond(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 
 	def := New("diamond")
-	a := def.Add("a", OfType("step"))
-	b := def.Add("b", OfType("step"), DependsOn(a))
-	c := def.Add("c", OfType("step"), DependsOn(a))
-	def.Add("d", OfType("step"), DependsOn(b, c))
+	a := def.MustAdd("a", OfType("step"))
+	b := def.MustAdd("b", OfType("step"), DependsOn(a))
+	c := def.MustAdd("c", OfType("step"), DependsOn(a))
+	def.MustAdd("d", OfType("step"), DependsOn(b, c))
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -297,10 +297,10 @@ func TestEngine_Diamond(t *testing.T) {
 func TestEngine_FailHaltWorkflow(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	def := New("halt")
-	a := def.Add("a", OfType("ok"))
-	b := def.Add("b", OfType("boom"), DependsOn(a))
-	def.Add("c", OfType("ok"), DependsOn(b))
-	def.Add("d", OfType("ok"), DependsOn(a)) // sibling branch
+	a := def.MustAdd("a", OfType("ok"))
+	b := def.MustAdd("b", OfType("boom"), DependsOn(a))
+	def.MustAdd("c", OfType("ok"), DependsOn(b))
+	def.MustAdd("d", OfType("ok"), DependsOn(a)) // sibling branch
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -340,11 +340,11 @@ func TestEngine_FailHaltWorkflow(t *testing.T) {
 func TestEngine_FailSkipDownstream(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	def := New("skip")
-	a := def.Add("a", OfType("ok"))
-	b := def.Add("b", OfType("boom"), DependsOn(a), OnFail(FailSkipDownstream))
-	def.Add("c", OfType("ok"), DependsOn(b))
-	d := def.Add("d", OfType("ok"), DependsOn(a))
-	def.Add("e", OfType("ok"), DependsOn(d))
+	a := def.MustAdd("a", OfType("ok"))
+	b := def.MustAdd("b", OfType("boom"), DependsOn(a), OnFail(FailSkipDownstream))
+	def.MustAdd("c", OfType("ok"), DependsOn(b))
+	d := def.MustAdd("d", OfType("ok"), DependsOn(a))
+	def.MustAdd("e", OfType("ok"), DependsOn(d))
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -385,9 +385,9 @@ func TestEngine_FailSkipDownstream(t *testing.T) {
 func TestEngine_FailContinue(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	def := New("continue")
-	a := def.Add("a", OfType("ok"))
-	b := def.Add("b", OfType("boom"), DependsOn(a), OnFail(FailContinue))
-	def.Add("c", OfType("merge"), DependsOn(b))
+	a := def.MustAdd("a", OfType("ok"))
+	b := def.MustAdd("b", OfType("boom"), DependsOn(a), OnFail(FailContinue))
+	def.MustAdd("c", OfType("merge"), DependsOn(b))
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -429,8 +429,8 @@ func TestEngine_FailContinue(t *testing.T) {
 func TestEngine_CancelStopsAdvancement(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	def := New("cancel")
-	a := def.Add("a", OfType("slow"))
-	def.Add("b", OfType("step"), DependsOn(a))
+	a := def.MustAdd("a", OfType("slow"))
+	def.MustAdd("b", OfType("step"), DependsOn(a))
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestEngine_CleanupRemovesKeys(t *testing.T) {
 	}()
 
 	def := New("oneshot")
-	def.Add("a", OfType("noop"))
+	def.MustAdd("a", OfType("noop"))
 	if err := engine.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestEngine_RejectUnregisteredDefinition(t *testing.T) {
 func TestEngine_RegisterValidatesDAG(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	def := New("bad")
-	def.Add("a", OfType("t"), DependsOnByName("a"))
+	def.MustAdd("a", OfType("t"), DependsOnByName("a"))
 	if err := engine.Register(def); err == nil {
 		t.Fatal("expected validation failure")
 	}
