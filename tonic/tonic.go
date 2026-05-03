@@ -2,7 +2,6 @@ package tonic
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding"
 	"errors"
 	"fmt"
@@ -20,9 +19,13 @@ import (
 	"sigs.k8s.io/yaml" // sigs.k8s.io/yaml is the alternative to the unmaintained lib github.com/ghodss/yaml. cf https://github.com/ghodss/yaml/issues/80
 )
 
+// MkfstHandler is the inner handler shape passed to ExecHook. The container
+// carries every dep the user-level handler asked for; tonic.Handler resolves
+// those deps once at registration and bakes the values into the closure, so
+// MkfstHandler implementations can ignore the container if they don't need it.
 type MkfstHandler func(
 	*gin.Context,
-	*sql.DB,
+	*Container,
 )
 
 // DefaultMaxBodyBytes is the maximum allowed size of a request body in bytes.
@@ -62,7 +65,7 @@ var (
 
 // BindHook is the hook called by the wrapping gin-handler when
 // binding an incoming request to the tonic-handler's input object.
-type BindHook func(*gin.Context, *sql.DB, interface{}) error
+type BindHook func(*gin.Context, *Container, interface{}) error
 
 // RenderHook is the last hook called by the wrapping gin-handler
 // before returning. It takes the Gin context, the HTTP status code
@@ -80,7 +83,7 @@ type ErrorHook func(*gin.Context, error) (int, interface{})
 // An ExecHook is the func called to handle a request.
 // The default ExecHook simply calle the wrapping gin-handler
 // with the gin context.
-type ExecHook func(*gin.Context, *sql.DB, MkfstHandler, string)
+type ExecHook func(*gin.Context, *Container, MkfstHandler, string)
 
 // DefaultErrorHook is the default error hook.
 // It returns a StatusBadRequest with a payload containing
@@ -99,7 +102,7 @@ var DefaultBindingHook BindHook = DefaultBindingHookMaxBodyBytes(DefaultMaxBodyB
 
 // DefaultBindingHookMaxBodyBytes returns a BindHook with the default logic, with configurable MaxBodyBytes.
 func DefaultBindingHookMaxBodyBytes(maxBodyBytes int64) BindHook {
-	return func(c *gin.Context, db *sql.DB, i interface{}) error {
+	return func(c *gin.Context, _ *Container, i interface{}) error {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
 		if c.Request.ContentLength == 0 || c.Request.Method == http.MethodGet {
 			return nil
@@ -142,8 +145,8 @@ func DefaultRenderHook(c *gin.Context, statusCode int, payload interface{}) {
 // DefaultExecHook is the default exec hook.
 // It simply executes the wrapping gin-handler with
 // the given context.
-func DefaultExecHook(c *gin.Context, db *sql.DB, h MkfstHandler, fname string) {
-	h(c, db)
+func DefaultExecHook(c *gin.Context, ct *Container, h MkfstHandler, fname string) {
+	h(c, ct)
 }
 
 // GetRoutes returns the routes handled by a tonic-enabled handler.

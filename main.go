@@ -3,6 +3,7 @@ package main
 import (
 	sql "database/sql"
 	"fmt"
+	"log"
 	"mkfst/auth/avatar"
 	"mkfst/auth/token"
 	"mkfst/config"
@@ -43,8 +44,12 @@ func AppV1Group() router.Group {
 
 	// create auth service with providers
 	authService := auth.NewService(options)
-	authService.AddProvider("github", "<Client ID>", "<Client Secret>")   // add github provider
-	authService.AddProvider("facebook", "<Client ID>", "<Client Secret>") // add facebook provider
+	if err := authService.AddProvider("github", "<Client ID>", "<Client Secret>"); err != nil {
+		log.Fatal(err)
+	}
+	if err := authService.AddProvider("facebook", "<Client ID>", "<Client Secret>"); err != nil {
+		log.Fatal(err)
+	}
 
 	// retrieve auth middleware
 	authMiddleware := authService.Middleware()

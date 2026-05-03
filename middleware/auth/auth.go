@@ -146,7 +146,9 @@ func NewService(opts Opts) (res *AuthService) {
 	return res
 }
 
-// Handlers gets http.Handler for all providers and avatars
+// Handlers gets http.Handler for all providers and avatars.
+// If no AvatarStore was configured, the avatar handler is a 404 stub so
+// callers can register the route unconditionally without an NPE.
 func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 
 	authorizationHandler := func(ctx *gin.Context, db *sql.DB) (gin.H, error) {
@@ -244,7 +246,35 @@ func (s *AuthService) Handlers() (authHandler, avatarHandler interface{}) {
 		return res, err
 	}
 
+	if s.avatarProxy == nil {
+		stub := func(ctx *gin.Context, _ *sql.DB) (any, error) {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return nil, nil
+		}
+		return authorizationHandler, stub
+	}
 	return authorizationHandler, s.avatarProxy.Handler
+}
+
+// appendProvider stores svc in the provider list and re-points the auth
+// middleware at the updated slice. Every Add* method must funnel through here
+// — bypassing it leaves the middleware blind to the new provider.
+func (s *AuthService) appendProvider(svc provider.Service) {
+	s.providers = append(s.providers, svc)
+	s.authMiddleware.Providers = s.providers
+}
+
+// baseParams returns a Params struct populated with the fields shared across
+// every provider. Callers fill in the provider-specific bits (Cid, Csecret,
+// UserAttributes, Host, Port, …) on the returned value.
+func (s *AuthService) baseParams() provider.Params {
+	return provider.Params{
+		URL:         s.opts.URL,
+		JwtService:  s.jwtService,
+		Issuer:      s.issuer,
+		AvatarSaver: s.avatarProxy,
+		L:           s.logger,
+	}
 }
 
 // Middleware returns auth middleware
@@ -252,135 +282,99 @@ func (s *AuthService) Middleware() Authenticator {
 	return s.authMiddleware
 }
 
-// AddProviderWithUserAttributes adds provider with user attributes mapping
-func (s *AuthService) AddProviderWithUserAttributes(name, cid, csecret string, userAttributes provider.UserAttributes) {
-	p := provider.Params{
-		URL:            s.opts.URL,
-		JwtService:     s.jwtService,
-		Issuer:         s.issuer,
-		AvatarSaver:    s.avatarProxy,
-		Cid:            cid,
-		Csecret:        csecret,
-		L:              s.logger,
-		UserAttributes: userAttributes,
-	}
-	s.addProvider(name, p)
+// AddProviderWithUserAttributes adds provider with user attributes mapping.
+// Returns an error if name doesn't match a known provider.
+func (s *AuthService) AddProviderWithUserAttributes(name, cid, csecret string, userAttributes provider.UserAttributes) error {
+	p := s.baseParams()
+	p.Cid = cid
+	p.Csecret = csecret
+	p.UserAttributes = userAttributes
+	return s.addProvider(name, p)
 }
 
-func (s *AuthService) addProvider(name string, p provider.Params) {
+func (s *AuthService) addProvider(name string, p provider.Params) error {
+	var svc provider.Service
 	switch strings.ToLower(name) {
 	case "github":
-		s.providers = append(s.providers, provider.NewService(provider.NewGithub(p)))
+		svc = provider.NewService(provider.NewGithub(p))
 	case "google":
-		s.providers = append(s.providers, provider.NewService(provider.NewGoogle(p)))
+		svc = provider.NewService(provider.NewGoogle(p))
 	case "facebook":
-		s.providers = append(s.providers, provider.NewService(provider.NewFacebook(p)))
+		svc = provider.NewService(provider.NewFacebook(p))
 	case "yandex":
-		s.providers = append(s.providers, provider.NewService(provider.NewYandex(p)))
+		svc = provider.NewService(provider.NewYandex(p))
 	case "battlenet":
-		s.providers = append(s.providers, provider.NewService(provider.NewBattlenet(p)))
+		svc = provider.NewService(provider.NewBattlenet(p))
 	case "microsoft":
-		s.providers = append(s.providers, provider.NewService(provider.NewMicrosoft(p)))
+		svc = provider.NewService(provider.NewMicrosoft(p))
 	case "twitter":
-		s.providers = append(s.providers, provider.NewService(provider.NewTwitter(p)))
+		svc = provider.NewService(provider.NewTwitter(p))
 	case "patreon":
-		s.providers = append(s.providers, provider.NewService(provider.NewPatreon(p)))
+		svc = provider.NewService(provider.NewPatreon(p))
 	case "dev":
-		s.providers = append(s.providers, provider.NewService(provider.NewDev(p)))
+		svc = provider.NewService(provider.NewDev(p))
 	default:
-		return
+		return fmt.Errorf("unknown auth provider %q", name)
 	}
-
-	s.authMiddleware.Providers = s.providers
+	s.appendProvider(svc)
+	return nil
 }
 
-// AddProvider adds provider for given name
-func (s *AuthService) AddProvider(name, cid, csecret string) {
-
-	p := provider.Params{
-		URL:            s.opts.URL,
-		JwtService:     s.jwtService,
-		Issuer:         s.issuer,
-		AvatarSaver:    s.avatarProxy,
-		Cid:            cid,
-		Csecret:        csecret,
-		L:              s.logger,
-		UserAttributes: map[string]string{},
-	}
-
-	s.addProvider(name, p)
+// AddProvider adds provider for given name. Returns an error if name doesn't
+// match a known provider.
+func (s *AuthService) AddProvider(name, cid, csecret string) error {
+	p := s.baseParams()
+	p.Cid = cid
+	p.Csecret = csecret
+	p.UserAttributes = map[string]string{}
+	return s.addProvider(name, p)
 }
 
 // AddDevProvider with a custom host and port
 func (s *AuthService) AddDevProvider(host string, port int) {
-	p := provider.Params{
-		URL:         s.opts.URL,
-		JwtService:  s.jwtService,
-		Issuer:      s.issuer,
-		AvatarSaver: s.avatarProxy,
-		L:           s.logger,
-		Port:        port,
-		Host:        host,
-	}
-	s.providers = append(s.providers, provider.NewService(provider.NewDev(p)))
+	p := s.baseParams()
+	p.Port = port
+	p.Host = host
+	s.appendProvider(provider.NewService(provider.NewDev(p)))
 }
 
 // AddAppleProvider allow SignIn with Apple ID
 func (s *AuthService) AddAppleProvider(appleConfig provider.AppleConfig, privKeyLoader provider.PrivateKeyLoaderInterface) error {
-	p := provider.Params{
-		URL:         s.opts.URL,
-		JwtService:  s.jwtService,
-		Issuer:      s.issuer,
-		AvatarSaver: s.avatarProxy,
-		L:           s.logger,
-	}
-
-	// Error checking at create need for catch one when apple private key init
+	p := s.baseParams()
 	appleProvider, err := provider.NewApple(p, appleConfig, privKeyLoader)
 	if err != nil {
 		return fmt.Errorf("an AppleProvider creating failed: %w", err)
 	}
-
-	s.providers = append(s.providers, provider.NewService(appleProvider))
+	s.appendProvider(provider.NewService(appleProvider))
 	return nil
 }
 
 // AddCustomProvider adds custom provider (e.g. https://gopkg.in/oauth2.v3)
 func (s *AuthService) AddCustomProvider(name string, client Client, copts provider.CustomHandlerOpt) {
-	p := provider.Params{
-		URL:         s.opts.URL,
-		JwtService:  s.jwtService,
-		Issuer:      s.issuer,
-		AvatarSaver: s.avatarProxy,
-		Cid:         client.Cid,
-		Csecret:     client.Csecret,
-		L:           s.logger,
-	}
-
-	s.providers = append(s.providers, provider.NewService(provider.NewCustom(name, p, copts)))
-	s.authMiddleware.Providers = s.providers
+	p := s.baseParams()
+	p.Cid = client.Cid
+	p.Csecret = client.Csecret
+	s.appendProvider(provider.NewService(provider.NewCustom(name, p, copts)))
 }
 
 // AddDirectProvider adds provider with direct check against data store
 // it doesn't do any handshake and uses provided credChecker to verify user and password from the request
 func (s *AuthService) AddDirectProvider(name string, credChecker provider.CredChecker) {
-	dh := provider.DirectHandler{
+	s.appendProvider(provider.NewService(provider.DirectHandler{
 		L:            s.logger,
 		ProviderName: name,
 		Issuer:       s.issuer,
 		TokenService: s.jwtService,
 		CredChecker:  credChecker,
 		AvatarSaver:  s.avatarProxy,
-	}
-	s.providers = append(s.providers, provider.NewService(dh))
-	s.authMiddleware.Providers = s.providers
+	}))
 }
 
 // AddDirectProviderWithUserIDFunc adds provider with direct check against data store and sets custom UserIDFunc allows
 // to modify user's ID on the client side.
 // it doesn't do any handshake and uses provided credChecker to verify user and password from the request
 func (s *AuthService) AddDirectProviderWithUserIDFunc(name string, credChecker provider.CredChecker, ufn provider.UserIDFunc) {
-	dh := provider.DirectHandler{
+	s.appendProvider(provider.NewService(provider.DirectHandler{
 		L:            s.logger,
 		ProviderName: name,
 		Issuer:       s.issuer,
@@ -388,14 +382,12 @@ func (s *AuthService) AddDirectProviderWithUserIDFunc(name string, credChecker p
 		CredChecker:  credChecker,
 		AvatarSaver:  s.avatarProxy,
 		UserIDFunc:   ufn,
-	}
-	s.providers = append(s.providers, provider.NewService(dh))
-	s.authMiddleware.Providers = s.providers
+	}))
 }
 
 // AddVerifProvider adds provider user's verification sent by sender
 func (s *AuthService) AddVerifProvider(name, msgTmpl string, sender provider.Sender) {
-	dh := provider.VerifyHandler{
+	s.appendProvider(provider.NewService(provider.VerifyHandler{
 		L:            s.logger,
 		ProviderName: name,
 		Issuer:       s.issuer,
@@ -404,15 +396,12 @@ func (s *AuthService) AddVerifProvider(name, msgTmpl string, sender provider.Sen
 		Sender:       sender,
 		Template:     msgTmpl,
 		UseGravatar:  s.useGravatar,
-	}
-	s.providers = append(s.providers, provider.NewService(dh))
-	s.authMiddleware.Providers = s.providers
+	}))
 }
 
 // AddCustomHandler adds user-defined self-implemented handler of auth provider
 func (s *AuthService) AddCustomHandler(handler provider.Provider) {
-	s.providers = append(s.providers, provider.NewService(handler))
-	s.authMiddleware.Providers = s.providers
+	s.appendProvider(provider.NewService(handler))
 }
 
 // DevAuth makes dev oauth2 server, for testing and development only!

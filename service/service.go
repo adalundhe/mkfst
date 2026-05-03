@@ -77,7 +77,17 @@ func (service *Service) Group(
 }
 
 func (service *Service) GetDB() *sql.DB {
+	if service.router.Db == nil {
+		return nil
+	}
 	return service.router.Db.Conn
+}
+
+// Provide registers additional dependencies that route handlers can ask for
+// in their argument list (in addition to *gin.Context and *sql.DB).
+func (service *Service) Provide(deps ...interface{}) *Service {
+	service.router.Provide(deps...)
+	return service
 }
 
 func (service *Service) ConfigureTracing(
@@ -125,12 +135,14 @@ func (service *Service) Run() (err error) {
 			func(ctx *gin.Context, db *sql.DB) (string, error) {
 				return "OK", nil
 			},
-			service.GetDB(),
+			service.router.Container,
 			200,
 		),
 	)
 
-	defer service.router.Db.Conn.Close()
+	if service.router.Db != nil {
+		defer service.router.Db.Conn.Close()
+	}
 
 	srv := &http.Server{
 		Addr:    serviceAddress,

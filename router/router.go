@@ -1,6 +1,7 @@
 package router
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	config "mkfst/config"
@@ -17,6 +18,7 @@ import (
 type Router struct {
 	Base       *fizz.Fizz
 	Db         *db.Connection
+	Container  *tonic.Container
 	groups     []Group
 	routes     []Route
 	middleware []interface{}
@@ -36,6 +38,14 @@ type Route struct {
 	docs         []fizz.OperationOption
 	handlers     []interface{}
 	status       int
+}
+
+// Provide registers additional dependencies that route handlers can ask for
+// in their argument list. Panics if called after Build, since deps are baked
+// into wrappers at registration time.
+func (router *Router) Provide(deps ...interface{}) *Router {
+	router.Container.Register(deps...)
+	return router
 }
 
 func (router *Router) Group(
@@ -107,7 +117,7 @@ func (router *Router) Build() *fizz.Fizz {
 	}
 
 	for _, middleware := range router.middleware {
-		Base.Use(tonic.Handler(middleware, router.Db.Conn, 200))
+		Base.Use(tonic.Handler(middleware, router.Container, 200))
 	}
 
 	for _, route := range router.routes {
@@ -117,7 +127,7 @@ func (router *Router) Build() *fizz.Fizz {
 	for _, group := range router.groups {
 
 		for _, middleware := range group.middleware {
-			group.Base.Use(tonic.Handler(middleware, router.Db.Conn, 200))
+			group.Base.Use(tonic.Handler(middleware, router.Container, 200))
 		}
 
 		if len(group.routes) > 0 {
@@ -138,7 +148,7 @@ func (router *Router) addRouteToRouter(route Route) {
 	mappedHandlers := MapHandlers(
 		route.handlers,
 		func(handler interface{}) gin.HandlerFunc {
-			return tonic.Handler(handler, router.Db.Conn, route.status)
+			return tonic.Handler(handler, router.Container, route.status)
 		},
 	)
 
@@ -211,7 +221,7 @@ func (group *Group) addRouteToGroup(route Route) {
 	mappedHandlers := MapHandlers(
 		route.handlers,
 		func(handler interface{}) gin.HandlerFunc {
-			return tonic.Handler(handler, group.router.Db.Conn, route.status)
+			return tonic.Handler(handler, group.router.Container, route.status)
 		},
 	)
 
@@ -288,9 +298,18 @@ func contains(groups []Group, comparator Group) bool {
 
 func Create(config config.Config) Router {
 
+	container := tonic.NewContainer()
+
 	if config.SkipDB {
+		// Register a typed-nil *sql.DB so handler signatures that name *sql.DB
+		// still resolve. Handlers that try to use it will panic — same outcome
+		// as today, just deferred to actual use rather than at registration.
+		var noDB *sql.DB
+		container.Register(noDB)
+
 		return Router{
 			Base:       fizz.NewFromEngine(gin.New()),
+			Container:  container,
 			groups:     []Group{},
 			routes:     []Route{},
 			middleware: []any{},
@@ -300,10 +319,12 @@ func Create(config config.Config) Router {
 	connection := db.Create(
 		db.Configure(config.Database),
 	)
+	container.Register(connection.Conn)
 
 	return Router{
 		Base:       fizz.New(),
 		Db:         &connection,
+		Container:  container,
 		groups:     []Group{},
 		routes:     []Route{},
 		middleware: []any{},

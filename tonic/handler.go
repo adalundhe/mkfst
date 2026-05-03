@@ -1,7 +1,6 @@
 package tonic
 
 import (
-	"database/sql"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -19,43 +18,49 @@ var (
 	validatorOnce sync.Once
 )
 
-// Handler returns a Gin HandlerFunc that wraps the handler passed
-// in parameters.
-// The handler may use the following signature:
-//
-//	func(*gin.Context, [input object ptr]) ([output object], error)
-//
-// Input and output objects are both optional.
-// As such, the minimal accepted signature is:
-//
-//	func(*gin.Context) error
-//
-// The wrapping gin-handler will bind the parameters from the query-string,
-// path, body and headers, and handle the errors.
-//
-// Handler will panic if the tonic handler or its input/output values
-// are of incompatible type.
-func Handler(h interface{}, db *sql.DB, status int, options ...func(*Route)) gin.HandlerFunc {
-	hv := reflect.ValueOf(h)
+// callPlan caches the per-handler reflection work done at registration time:
+// which container values to inject as positional args, and the optional input
+// struct type to bind from the request.
+type callPlan struct {
+	deps      []reflect.Value
+	inputType reflect.Type
+}
 
+// Handler returns a Gin HandlerFunc wrapping h.
+//
+// The handler signature must be:
+//
+//	func(*gin.Context, ...deps, [*InputStruct]) ([Output], error)
+//
+// where each dep type must be registered in container. The optional last arg
+// must be a pointer to a struct and is bound from the request (body / query /
+// path / header) before the call.
+//
+// Handler panics if the signature can't be reconciled with the container.
+func Handler(h interface{}, container *Container, status int, options ...func(*Route)) gin.HandlerFunc {
+	if container == nil {
+		container = NewContainer()
+	}
+
+	hv := reflect.ValueOf(h)
 	if hv.Kind() != reflect.Func {
 		panic(fmt.Sprintf("handler parameters must be a function, got %T", h))
 	}
 	ht := hv.Type()
 	fname := fmt.Sprintf("%s_%s", runtime.FuncForPC(hv.Pointer()).Name(), uuid.Must(uuid.NewRandom()).String())
 
-	in := input(ht, fname)
+	plan := buildCallPlan(ht, container, fname)
 	out := output(ht, fname)
 
 	// Wrap Gin handler.
-	f := func(c *gin.Context, db *sql.DB) {
+	f := func(c *gin.Context, ct *Container) {
 		_, ok := c.Get(tonicWantRouteInfos)
 		if ok {
 			r := &Route{}
 			r.defaultStatusCode = status
 			r.handler = hv
 			r.handlerType = ht
-			r.inputType = in
+			r.inputType = plan.inputType
 			r.outputType = out
 			for _, opt := range options {
 				opt(r)
@@ -64,50 +69,38 @@ func Handler(h interface{}, db *sql.DB, status int, options ...func(*Route)) gin
 			c.Abort()
 			return
 		}
-		// funcIn contains the input parameters of the
-		// tonic handler call.
-		args := []reflect.Value{reflect.ValueOf(c)}
-		args = append(args, reflect.ValueOf(db))
 
-		// Tonic handler has custom input, handle
-		// binding.
-		if in != nil {
-			input := reflect.New(in)
-			// Bind the body with the hook.
-			if err := bindHook(c, db, input.Interface()); err != nil {
-				handleError(c, BindError{message: err.Error(), typ: in})
+		args := make([]reflect.Value, 0, 1+len(plan.deps)+1)
+		args = append(args, reflect.ValueOf(c))
+		args = append(args, plan.deps...)
+
+		if plan.inputType != nil {
+			input := reflect.New(plan.inputType)
+			if err := bindHook(c, ct, input.Interface()); err != nil {
+				handleError(c, BindError{message: err.Error(), typ: plan.inputType})
 				return
 			}
-			// Bind query-parameters.
 			if err := bind(c, input, QueryTag, extractQuery); err != nil {
 				handleError(c, err)
 				return
 			}
-			// Bind path arguments.
 			if err := bind(c, input, PathTag, extractPath); err != nil {
 				handleError(c, err)
 				return
 			}
-			// Bind headers.
 			if err := bind(c, input, HeaderTag, extractHeader); err != nil {
 				handleError(c, err)
 				return
 			}
-			// validating query and path inputs if they have a validate tag
 			initValidator()
-
 			args = append(args, input)
-
 			if err := validatorObj.Struct(input.Interface()); err != nil {
 				handleError(c, BindError{message: err.Error(), validationErr: err})
 				return
 			}
 		}
 
-		// Call tonic handler with the arguments
-		// and extract the returned values.
 		var err, val interface{}
-
 		ret := hv.Call(args)
 		if out != nil {
 			val = ret[0].Interface()
@@ -115,20 +108,18 @@ func Handler(h interface{}, db *sql.DB, status int, options ...func(*Route)) gin
 		} else {
 			err = ret[0].Interface()
 		}
-		// Handle the error returned by the
-		// handler invocation, if any.
 		if err != nil {
 			handleError(c, err.(error))
 			return
 		}
 		renderHook(c, status, val)
 	}
-	// Register route in tonic-enabled routes map
+
 	route := &Route{
 		defaultStatusCode: status,
 		handler:           hv,
 		handlerType:       ht,
-		inputType:         in,
+		inputType:         plan.inputType,
 		outputType:        out,
 	}
 	for _, opt := range options {
@@ -138,7 +129,7 @@ func Handler(h interface{}, db *sql.DB, status int, options ...func(*Route)) gin
 	routes[fname] = route
 	routesMu.Unlock()
 
-	ret := func(c *gin.Context) { execHook(c, db, f, fname) }
+	ret := func(c *gin.Context) { execHook(c, container, f, fname) }
 
 	funcsMu.Lock()
 	defer funcsMu.Unlock()
@@ -309,43 +300,51 @@ func bind(c *gin.Context, v reflect.Value, tag string, extract extractor) error 
 	return nil
 }
 
-// input checks the input parameters of a tonic handler
-// and return the type of the second parameter, if any.
-func input(ht reflect.Type, name string) reflect.Type {
+// buildCallPlan validates the handler signature against container and returns
+// the per-call plan: pre-resolved deps in arg order, plus the optional input
+// type. Panics on any incompatibility.
+//
+// Rules:
+//   - arg 0 must be *gin.Context
+//   - args 1..N: each looked up in container by exact type. The first arg that
+//     isn't in the container must be the last arg AND a pointer to a struct,
+//     in which case it becomes the bound input.
+func buildCallPlan(ht reflect.Type, container *Container, name string) callPlan {
 	n := ht.NumIn()
-	if n < 1 || n > 3 {
-		panic(fmt.Sprintf(
-			"incorrect number of input parameters for handler %s, expected 1 or 2, got %d",
-			name, n,
-		))
+	if n < 1 {
+		panic(fmt.Sprintf("handler %s must take at least *gin.Context", name))
 	}
-	// First parameter of tonic handler must be
-	// a pointer to a Gin context.
 	if !ht.In(0).ConvertibleTo(reflect.TypeOf(&gin.Context{})) {
 		panic(fmt.Sprintf(
 			"invalid first parameter for handler %s, expected *gin.Context, got %v",
 			name, ht.In(0),
 		))
 	}
-	if !ht.In(1).ConvertibleTo(reflect.TypeOf(&sql.DB{})) {
-		panic(fmt.Sprintf(
-			"invalid second parameter for handler %s, expected *sql.DB, got %v",
-			name, ht.In(0),
-		))
-	}
-	if n == 3 {
-		// Check the type of the second parameter
-		// of the handler. Must be a pointer to a struct.
-		if ht.In(2).Kind() != reflect.Ptr || ht.In(2).Elem().Kind() != reflect.Struct {
-			panic(fmt.Sprintf(
-				"invalid second parameter for handler %s, expected pointer to struct, got %v",
-				name, ht.In(2),
-			))
-		} else {
-			return ht.In(2).Elem()
+
+	plan := callPlan{}
+	for i := 1; i < n; i++ {
+		argType := ht.In(i)
+		if v, ok := container.Lookup(argType); ok {
+			plan.deps = append(plan.deps, v)
+			continue
 		}
+		// Not registered — only allowed as the final arg, and only if it
+		// looks like an input struct.
+		if i != n-1 {
+			panic(fmt.Sprintf(
+				"handler %s arg %d (%v): type not registered in container and not the final arg; register it via Container.Register or move input to the last position",
+				name, i, argType,
+			))
+		}
+		if argType.Kind() != reflect.Ptr || argType.Elem().Kind() != reflect.Struct {
+			panic(fmt.Sprintf(
+				"handler %s last arg must be a registered dep or a pointer to an input struct, got %v",
+				name, argType,
+			))
+		}
+		plan.inputType = argType.Elem()
 	}
-	return nil
+	return plan
 }
 
 // output checks the output parameters of a tonic handler
