@@ -40,6 +40,23 @@ Read these in roughly the order below; each builds on the previous.
 | [telemetry.md](telemetry.md)               | OpenTelemetry traces and metrics                           |
 | [hooks.md](hooks.md)                       | `tonic` bind / render / error / exec hooks                 |
 
+## Providers (optional add-on packages)
+
+The framework's HTTP/handler core stays minimal. Optional **providers**
+hang off it for the things an API server typically also needs.
+
+| File                                                       | Topic                                                                                  |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [providers.md](providers.md)                               | Map of providers, how they layer, how they wire into the HTTP server                   |
+| [policy.md](policy.md)                                     | RBAC layer — framework-defined permissions + operator-defined roles                    |
+| [cache.md](cache.md)                                       | Pluggable key/value cache (memory / Redis / SQL)                                       |
+| [tasks.md](tasks.md)                                       | Background jobs + recurring schedules (memory / Redis / SQL)                           |
+| [workflows.md](workflows.md)                               | DAG of tasks with parent-output flow + per-node failure policies                       |
+| [docker.md](docker.md)                                     | Docker engine wrapper — pull / build / run / inspect                                   |
+| [stacks.md](stacks.md)                                     | Compose-like multi-container stacks with isolated networks, ingress, health probes      |
+| [vfs.md](vfs.md)                                           | In-memory FS with FUSE mount + host-overlay caching                                    |
+| [TYPESCRIPT_TASKS.md](TYPESCRIPT_TASKS.md)                 | TypeScript-authored workflows submitted to a server                                    |
+
 ## Runnable examples
 
 Every concept in the docs is exercised in [`../examples/`](../examples/).
@@ -53,6 +70,14 @@ Examples are numbered by complexity:
 - [`06-auth`](../examples/06-auth)           — dev OAuth provider + protected routes
 - [`07-telemetry`](../examples/07-telemetry) — stdout OTel exporters
 - [`08-openapi`](../examples/08-openapi)     — rich OpenAPI metadata, custom responses, examples
+
+Provider examples (each pairs an HTTP API with one or more providers):
+
+- [`09-cache`](../examples/09-cache)         — response cache middleware backed by `providers/cache`
+- [`10-tasks`](../examples/10-tasks)         — API enqueueing background jobs via `providers/tasks`
+- [`11-workflows`](../examples/11-workflows) — API submitting DAG workflows via `providers/workflows`
+- [`12-stacks`](../examples/12-stacks)       — API managing a docker stack via `providers/docker/network`
+- [`13-ts-workflows`](../examples/13-ts-workflows) — API accepting TypeScript workflows via `providers/ts`
 
 Run any example from the **repository root** (see
 [examples/README.md](../examples/README.md) for the reason why):

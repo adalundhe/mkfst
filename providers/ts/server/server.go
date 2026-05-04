@@ -18,10 +18,19 @@ import (
 
 // Server is the HTTP API endpoint.
 type Server struct {
-	tsEngine *ts.Engine
+	tsEngine    *ts.Engine
 	stackLister StackLister
+	submitLimit *RateLimiter
 
 	mu sync.RWMutex
+}
+
+// SetSubmitRateLimit installs a per-source rate limit on the
+// /v1/workflows POST endpoint. Pass nil to remove.
+func (s *Server) SetSubmitRateLimit(rl *RateLimiter) {
+	s.mu.Lock()
+	s.submitLimit = rl
+	s.mu.Unlock()
 }
 
 // StackLister surfaces the operator's currently-applied stacks.
@@ -75,6 +84,21 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
+		// Per-source rate limit on submissions: bundling is
+		// CPU-bound and could DOS the server even if submitted
+		// content is rejected.
+		s.mu.RLock()
+		rl := s.submitLimit
+		s.mu.RUnlock()
+		if rl != nil {
+			ip := extractSourceIP(r, false)
+			if !rl.Allow(ip) {
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusTooManyRequests, "RATE_LIMITED",
+					"per-source submission rate limit exceeded")
+				return
+			}
+		}
 		s.submitWorkflow(w, r)
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": []string{}})

@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/docker/docker/client"
+
+	"mkfst/providers/policy"
 )
 
 // === engine ===
@@ -30,7 +32,9 @@ type Engine struct {
 	closeErr  error
 }
 
-// EngineOpts configures NewEngine.
+// EngineOpts configures NewEngine. The optional Checker is consulted
+// at every privileged stack operation (Up/Down/RunOneShot/Exec).
+// Nil = no policy enforcement (defaults to permissive).
 type EngineOpts struct {
 	// EngineID identifies this engine instance for resource
 	// labeling. Default: a fresh random hex ID. Stable IDs are
@@ -54,6 +58,9 @@ type EngineOpts struct {
 	// scheduler's heap. Default 25ms. Lower = tighter probe
 	// timing but more wakeups.
 	ProbeScheduleResolution interface{} // time.Duration; interface to allow zero-value detection in tests
+
+	// Policy gates privileged stack operations. nil = pass-through.
+	Policy policy.Checker
 }
 
 // NewEngine constructs an Engine bound to the docker client.
@@ -73,6 +80,9 @@ func NewEngine(cli *client.Client, opts EngineOpts) (*Engine, error) {
 	}
 	if opts.ProbeWorkers <= 0 {
 		opts.ProbeWorkers = 256
+	}
+	if opts.Policy == nil {
+		opts.Policy = policy.AllowAllChecker{}
 	}
 	e := &Engine{cli: cli, opts: opts}
 	e.probeSched = newProbeScheduler(e, opts.ProbeWorkers)

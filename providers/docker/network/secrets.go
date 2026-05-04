@@ -95,7 +95,10 @@ func (s *Stack) cleanupSecrets() error {
 		return nil
 	}
 	for name, sec := range s.secrets {
-		// Zero in-memory bytes.
+		// Unlock the page (best-effort) before zeroing so the
+		// kernel doesn't keep them resident any longer than
+		// necessary.
+		_ = unlockSecretPages(sec.Value)
 		for i := range sec.Value {
 			sec.Value[i] = 0
 		}

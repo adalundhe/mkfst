@@ -103,7 +103,51 @@ func (e *Engine) Adopt(ctx context.Context, opts AdoptOpts) (AdoptResult, error)
 				role:    role,
 			}
 			s.containers[svcName] = append(s.containers[svcName], inst)
+
+			// Synthesize a Service for the adopted container so
+			// later Status / Down calls have a complete view. We
+			// can't recover the original probe / cmd / mounts —
+			// those live in Go source — but we recover enough
+			// metadata for inspection + teardown.
+			if _, ok := s.services[svcName]; !ok {
+				s.services[svcName] = &Service{
+					name:     svcName,
+					replicas: 1, // updated below as more replicas appear
+					role:     role,
+				}
+				s.order = append(s.order, svcName)
+			} else {
+				s.services[svcName].replicas++
+			}
+
+			// Per-replica probe state: adopted replicas are
+			// pre-marked healthy (they're already running and
+			// presumably did their original probe work in the
+			// prior process). The new engine doesn't re-run
+			// readiness — adopting is observation-mode primarily.
+			rps := newReplicaProbeState(svcName, rep, c.ID)
+			rps.markHealthy()
+			s.probes[svcName] = append(s.probes[svcName], rps)
 		}
+
+		// 3. Wire a fresh Monitor so subscribers can see post-
+		//    adoption events.
+		s.monitor = newMonitor(stackID, stackName, e.opts.MonitorBuffer)
+
+		// 4. Default-allow egress holders for every adopted
+		//    service so Stack.AllowsEgress probes return sensibly.
+		for svcName := range s.containers {
+			s.egress[svcName] = allowAllHolder()
+		}
+
+		// 5. Mark Up so subsequent Down / Status / Exec /
+		//    RunOneShot calls operate normally. We do NOT
+		//    re-bind a gateway: adopted ingress ports are
+		//    already published by the prior process's containers,
+		//    and rebinding would race the host port. Operators
+		//    that want full re-management call Down on the
+		//    adopted stack and re-Up from scratch with their
+		//    intended definition.
 		s.state.Store(int32(StackUp))
 		e.stacks.Store(stackID, s)
 		res.Stacks = append(res.Stacks, s)

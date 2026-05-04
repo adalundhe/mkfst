@@ -40,17 +40,59 @@ type OneShotOpts struct {
 	Aliases    []string
 	Timeout    time.Duration
 	Name       string            // optional; auto-generated otherwise
-	Stdin      []byte            // optional bytes piped to the container's stdin
-	Labels     map[string]string // user labels merged on top of mkfst's
+
+	// Stdin: bounded byte payload piped to the container's stdin.
+	// Mutually exclusive with StdinReader. For inputs > 16 MiB
+	// prefer StdinReader to avoid full in-memory buffering.
+	Stdin []byte
+
+	// StdinReader: streaming stdin source. Bounded by
+	// StdinMaxBytes (default 16 MiB) — reads past that are
+	// truncated with an error logged via the monitor.
+	StdinReader io.Reader
+
+	// StdinMaxBytes caps reads from StdinReader. 0 = default 16 MiB.
+	StdinMaxBytes int64
+
+	// MaxOutputBytes caps the in-memory capture of stdout/stderr.
+	// 0 = default 10 MiB. Bytes past the cap are SPOOLED to a per-
+	// stack docker volume (see Stack.SpoolMount()), not silently
+	// dropped — the result records the spool path so callers can
+	// retrieve the full output post-hoc.
+	MaxOutputBytes int64
+
+	// LeaveContainer disables the post-run container removal so
+	// operators can inspect a failed one-shot. The container is
+	// labeled mkfst.debug=true and discoverable via
+	// Engine.ListDebugContainers.
+	LeaveContainer bool
+
+	Labels map[string]string // user labels merged on top of mkfst's
 }
 
 // OneShotResult is the captured outcome.
 type OneShotResult struct {
 	ContainerID string
 	ExitCode    int
-	Stdout      []byte
-	Stderr      []byte
-	Duration    time.Duration
+
+	// Stdout / Stderr are the in-memory capture, capped at
+	// MaxOutputBytes. When the container produced more, the bytes
+	// past the cap are written to the spool path (below) and the
+	// truncated flag is set.
+	Stdout []byte
+	Stderr []byte
+
+	StdoutTruncated bool
+	StderrTruncated bool
+
+	// SpoolPath, when non-empty, is the host filesystem path
+	// where the full untruncated output lives. The path is under
+	// the per-stack spool directory and removed when the operator
+	// calls Stack.SweepSpool. Empty when no spooling occurred.
+	SpoolStdoutPath string
+	SpoolStderrPath string
+
+	Duration time.Duration
 }
 
 // ExecOpts configures Exec.
@@ -89,6 +131,18 @@ func (s *Stack) RunOneShot(ctx context.Context, opts OneShotOpts) (*OneShotResul
 	if opts.Image == "" {
 		return nil, fmt.Errorf("%w: image is required", ErrInvalidConfig)
 	}
+	// Policy check — scoped to the stack name so operators can grant
+	// `stack.run_oneshot` on a per-stack basis.
+	if err := s.engine.opts.Policy.Check(ctx, "stack.run_oneshot", s.name); err != nil {
+		return nil, err
+	}
+	// Resolve image to digest-pinned form (and reject if pinning
+	// is required but the ref isn't pinned).
+	resolvedImage, err := s.resolveImage(opts.Image)
+	if err != nil {
+		return nil, err
+	}
+	opts.Image = resolvedImage
 
 	// Concurrency cap.
 	s.mu.RLock()
@@ -174,23 +228,36 @@ func (s *Stack) RunOneShot(ctx context.Context, opts OneShotOpts) (*OneShotResul
 		name = "mkfst-oneshot-" + s.id + "-" + id[:8]
 	}
 
+	// Tag debug containers so operators can find them later.
+	if opts.LeaveContainer {
+		labels["mkfst.debug"] = "true"
+	}
+
 	startedAt := time.Now()
 	created, err := s.engine.cli.ContainerCreate(ctx, cfg, host, netCfg, nil, name)
 	if err != nil {
 		return nil, fmt.Errorf("RunOneShot create: %w", err)
 	}
-	defer func() {
-		rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = s.engine.cli.ContainerRemove(rmCtx, created.ID, dockercontainer.RemoveOptions{Force: true})
-	}()
+	if !opts.LeaveContainer {
+		defer func() {
+			rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = s.engine.cli.ContainerRemove(rmCtx, created.ID, dockercontainer.RemoveOptions{Force: true})
+		}()
+	}
+
+	// Decide stdin path: bounded []byte vs streaming io.Reader.
+	hasStdin := len(opts.Stdin) > 0 || opts.StdinReader != nil
+	if len(opts.Stdin) > 0 && opts.StdinReader != nil {
+		return nil, fmt.Errorf("%w: Stdin and StdinReader are mutually exclusive", ErrInvalidConfig)
+	}
 
 	// Attach for stdin / log capture.
 	attachCtx, attachCancel := context.WithCancel(ctx)
 	defer attachCancel()
 	hijack, err := s.engine.cli.ContainerAttach(attachCtx, created.ID, dockercontainer.AttachOptions{
 		Stream: true,
-		Stdin:  len(opts.Stdin) > 0,
+		Stdin:  hasStdin,
 		Stdout: true,
 		Stderr: true,
 	})
@@ -204,31 +271,49 @@ func (s *Stack) RunOneShot(ctx context.Context, opts OneShotOpts) (*OneShotResul
 	}
 
 	// Pipe stdin.
-	if len(opts.Stdin) > 0 {
-		_, _ = hijack.Conn.Write(opts.Stdin)
+	if hasStdin {
+		stdinCap := opts.StdinMaxBytes
+		if stdinCap <= 0 {
+			stdinCap = 16 << 20 // 16 MiB default
+		}
+		if len(opts.Stdin) > 0 {
+			if int64(len(opts.Stdin)) > stdinCap {
+				return nil, fmt.Errorf("RunOneShot: Stdin %d bytes > cap %d", len(opts.Stdin), stdinCap)
+			}
+			if _, werr := hijack.Conn.Write(opts.Stdin); werr != nil {
+				return nil, fmt.Errorf("RunOneShot: stdin write: %w", werr)
+			}
+		} else {
+			limited := newLimitedStdin(opts.StdinReader, stdinCap)
+			if _, werr := io.Copy(hijack.Conn, limited); werr != nil &&
+				!errors.Is(werr, ErrSpoolFull) && !errors.Is(werr, io.EOF) {
+				return nil, fmt.Errorf("RunOneShot: stdin stream: %w", werr)
+			}
+		}
 		_ = hijack.CloseWrite()
 	}
 
-	// Read demuxed stdout+stderr in a tracked goroutine so every
-	// return path joins it before exiting (no leaks even on
-	// ctx-cancel or wait-error).
-	var stdout, stderr bytes.Buffer
+	// Bounded capture-then-spool for stdout/stderr.
+	maxOut := opts.MaxOutputBytes
+	if maxOut <= 0 {
+		maxOut = 10 << 20 // 10 MiB
+	}
+	spoolDir := s.spoolDirFor(name)
+	hardCap := s.spoolHardCap()
+	stdoutW := newCapSpoolWriter(maxOut, spoolDir, "stdout", hardCap)
+	stderrW := newCapSpoolWriter(maxOut, spoolDir, "stderr", hardCap)
+
 	logsDone := make(chan error, 1)
 	go func() {
-		_, err := demuxDockerStream(&stdout, &stderr, hijack.Reader)
-		logsDone <- err
+		_, derr := demuxDockerStream(stdoutW, stderrW, hijack.Reader)
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
+		logsDone <- derr
 	}()
-	// joinLogs is the canonical single-place wait — it triggers
-	// hijack.Close (already deferred) so demuxDockerStream returns
-	// and the goroutine exits.
 	joinLogs := func() {
-		// hijack is already closed by the parent defer; we just
-		// wait for the goroutine's send.
 		select {
 		case <-logsDone:
 		case <-time.After(5 * time.Second):
-			// hard ceiling: if demux is genuinely stuck, we don't
-			// hang the caller indefinitely.
 		}
 	}
 	defer joinLogs()
@@ -251,11 +336,15 @@ func (s *Stack) RunOneShot(ctx context.Context, opts OneShotOpts) (*OneShotResul
 	}
 
 	return &OneShotResult{
-		ContainerID: created.ID,
-		ExitCode:    exitCode,
-		Stdout:      stdout.Bytes(),
-		Stderr:      stderr.Bytes(),
-		Duration:    time.Since(startedAt),
+		ContainerID:     created.ID,
+		ExitCode:        exitCode,
+		Stdout:          stdoutW.Bytes(),
+		Stderr:          stderrW.Bytes(),
+		StdoutTruncated: stdoutW.Truncated(),
+		StderrTruncated: stderrW.Truncated(),
+		SpoolStdoutPath: stdoutW.SpoolPath(),
+		SpoolStderrPath: stderrW.SpoolPath(),
+		Duration:        time.Since(startedAt),
 	}, nil
 }
 
@@ -267,6 +356,9 @@ func (s *Stack) Exec(ctx context.Context, serviceName string, replica int, opts 
 	}
 	if len(opts.Cmd) == 0 {
 		return nil, fmt.Errorf("%w: cmd required", ErrInvalidConfig)
+	}
+	if err := s.engine.opts.Policy.Check(ctx, "stack.exec", s.name); err != nil {
+		return nil, err
 	}
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc

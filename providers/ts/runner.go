@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"mkfst/providers/cache"
+	"mkfst/providers/policy"
 	"mkfst/providers/tasks"
 	"mkfst/providers/ts/bundle"
 	"mkfst/providers/ts/runtime"
@@ -49,9 +50,11 @@ type Workflow struct {
 	// messages from JS bundle positions back to original TS lines.
 	sourceMap *SourceMap
 
-	mu       sync.Mutex
-	rt       runtime.Runtime // shared single runtime for v1 (pool comes later)
-	rtCtx    context.Context
+	// pool is the per-workflow runtime pool. Each runtime in the
+	// pool is pre-warmed with the bundle evaluated; workflow node
+	// handlers borrow a runtime, invoke the JS task, return it.
+	// Up to len(pool) handlers run in parallel.
+	pool *runtime.Pool
 }
 
 // DAG mirrors the JS-side DAGDefinition structure so Go can reason
@@ -92,6 +95,8 @@ type Engine struct {
 	allowlist *bundle.Allowlist
 	cache     cache.Cache
 	emitMaps  bool
+	policy    policy.Checker
+	jsWorkers int
 
 	mu        sync.RWMutex
 	workflows map[string]*Workflow
@@ -107,6 +112,15 @@ type EngineOpts struct {
 	// translate runtime errors back to TS lines but increases
 	// bundle size ~30%. Default off.
 	EmitSourceMaps bool
+	// Policy gates ts.submit + ts.run operations. nil = pass-through.
+	// The submit-time check is scoped to the workflow's bound stack
+	// (or empty when no stack is bound); the run-time check is
+	// scoped to the workflow name.
+	Policy policy.Checker
+	// JSWorkers is the per-workflow runtime pool size. Default 4.
+	// Higher = more parallel workflow-node execution at the cost
+	// of memory (~10–20 MiB per runtime). Lower = serialization.
+	JSWorkers int
 }
 
 // NewEngine constructs the TS engine.
@@ -123,6 +137,12 @@ func NewEngine(opts EngineOpts) (*Engine, error) {
 	if opts.Cache == nil {
 		opts.Cache = cache.NewMemoryCache(cache.MemoryOpts{MaxBytes: 16 * 1024 * 1024})
 	}
+	if opts.Policy == nil {
+		opts.Policy = policy.AllowAllChecker{}
+	}
+	if opts.JSWorkers <= 0 {
+		opts.JSWorkers = 4
+	}
 	return &Engine{
 		wfEng:     opts.WorkflowEngine,
 		rtEng:     runtime.NewEngine(),
@@ -130,6 +150,8 @@ func NewEngine(opts EngineOpts) (*Engine, error) {
 		allowlist: opts.Allowlist,
 		cache:     opts.Cache,
 		emitMaps:  opts.EmitSourceMaps,
+		policy:    opts.Policy,
+		jsWorkers: opts.JSWorkers,
 		workflows: map[string]*Workflow{},
 	}, nil
 }
@@ -162,6 +184,11 @@ func (e *Engine) SubmitWith(ctx context.Context, opts SubmitOpts) (*Workflow, er
 	if len(source) == 0 {
 		return nil, errors.New("Submit: empty source")
 	}
+	// Policy check — scoped to the bound stack so operators can
+	// grant ts.submit on a per-stack basis.
+	if err := e.policy.Check(ctx, "ts.submit", stackName); err != nil {
+		return nil, err
+	}
 	res, err := bundle.Build(bundle.Opts{
 		Source:         source,
 		SourceFilename: filename,
@@ -181,47 +208,62 @@ func (e *Engine) SubmitWith(ctx context.Context, opts SubmitOpts) (*Workflow, er
 		return nil, fmt.Errorf("bundle: hash mismatch (recorded=%s recomputed=%s)", res.SHA256, recomputed)
 	}
 
-	// Spin up a runtime, eval the bundle, read back the DAG.
-	rtInst, err := e.rtEng.NewRuntime(ctx, runtime.RuntimeOpts{HostBridge: e.bridge})
-	if err != nil {
-		return nil, fmt.Errorf("runtime: %w", err)
+	// Pool-warm helper: applied to every runtime in the pool.
+	// Installs the bridge dispatcher (with the stack scope baked
+	// in) and evaluates the bundle so the JS-side DAG global is
+	// populated.
+	initFn := func(ctx context.Context, rt runtime.Runtime) error {
+		if err := installBridgeDispatch(ctx, rt, e.bridge, stackName); err != nil {
+			return fmt.Errorf("install bridge: %w", err)
+		}
+		v, err := rt.Eval(ctx, string(res.JS), runtime.EvalOpts{Filename: filename})
+		if err != nil {
+			return fmt.Errorf("eval bundle: %w", err)
+		}
+		v.Free(ctx)
+		return nil
 	}
 
-	// Install the bridge dispatcher as a host function. Scope
-	// every call to the workflow's bound stack so cross-stack
-	// reach is mechanically impossible.
-	if err := installBridgeDispatch(ctx, rtInst, e.bridge, stackName); err != nil {
-		_ = rtInst.Close(ctx)
-		return nil, fmt.Errorf("install bridge: %w", err)
+	// Build a pool of pre-warmed runtimes. Bundle eval is the
+	// expensive part — done once per runtime, amortized over
+	// every node invocation. JSWorkers controls per-workflow
+	// fan-out parallelism.
+	pool, err := runtime.NewPool(ctx, runtime.PoolOpts{
+		Size:       e.jsWorkers,
+		EngineOpts: runtime.RuntimeOpts{HostBridge: e.bridge},
+		Engine:     e.rtEng,
+		Init:       initFn,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pool: %w", err)
 	}
 
-	// Eval the bundle.
-	v, err := rtInst.Eval(ctx, string(res.JS), runtime.EvalOpts{Filename: filename})
-	if err != nil {
-		_ = rtInst.Close(ctx)
-		return nil, fmt.Errorf("eval bundle: %w", err)
-	}
-	v.Free(ctx)
-
-	// Read back the DAG from the JS-side global.
-	dagV, err := rtInst.Eval(ctx, `JSON.stringify(globalThis.__mkfst_workflow.dag)`, runtime.EvalOpts{Filename: "<introspect>"})
-	if err != nil {
-		_ = rtInst.Close(ctx)
-		return nil, fmt.Errorf("introspect dag: %w", err)
-	}
-	dagJSON, err := dagV.String(ctx)
-	dagV.Free(ctx)
-	if err != nil {
-		_ = rtInst.Close(ctx)
-		return nil, err
+	// Use one runtime to extract the DAG metadata once. Borrowed
+	// + returned so the pool's count stays correct.
+	var dagJSON string
+	if pErr := pool.With(ctx, func(rt runtime.Runtime) error {
+		dagV, err := rt.Eval(ctx, `JSON.stringify(globalThis.__mkfst_workflow.dag)`, runtime.EvalOpts{Filename: "<introspect>"})
+		if err != nil {
+			return fmt.Errorf("introspect dag: %w", err)
+		}
+		s, err := dagV.String(ctx)
+		dagV.Free(ctx)
+		if err != nil {
+			return err
+		}
+		dagJSON = s
+		return nil
+	}); pErr != nil {
+		_ = pool.Close(ctx)
+		return nil, pErr
 	}
 	if dagJSON == "" || dagJSON == "undefined" || dagJSON == "null" {
-		_ = rtInst.Close(ctx)
+		_ = pool.Close(ctx)
 		return nil, errors.New("workflow did not export a DAG (use defineDAG and export default)")
 	}
 	var dag DAG
 	if err := json.Unmarshal([]byte(dagJSON), &dag); err != nil {
-		_ = rtInst.Close(ctx)
+		_ = pool.Close(ctx)
 		return nil, fmt.Errorf("decode dag: %w", err)
 	}
 
@@ -233,8 +275,7 @@ func (e *Engine) SubmitWith(ctx context.Context, opts SubmitOpts) (*Workflow, er
 		wfEngine:  e.wfEng,
 		rtEngine:  e.rtEng,
 		rtBridge:  e.bridge,
-		rt:        rtInst,
-		rtCtx:     context.Background(),
+		pool:      pool,
 	}
 	// Parse source map if present so handler errors translate
 	// back to TS source positions.
@@ -274,13 +315,13 @@ func (e *Engine) SubmitWith(ctx context.Context, opts SubmitOpts) (*Workflow, er
 		}
 		ref, addErr := def.Add(nodeName, opts...)
 		if addErr != nil {
-			_ = rtInst.Close(ctx)
+			_ = pool.Close(ctx)
 			return nil, fmt.Errorf("definition Add %q: %w", nodeName, addErr)
 		}
 		nodeRefs[node.NodeID] = ref
 	}
 	if err := e.wfEng.Register(def); err != nil {
-		_ = rtInst.Close(ctx)
+		_ = pool.Close(ctx)
 		return nil, fmt.Errorf("register definition: %w", err)
 	}
 	wf.def = def
@@ -297,7 +338,7 @@ func (e *Engine) SubmitWith(ctx context.Context, opts SubmitOpts) (*Workflow, er
 			// resubmits the same workflow definition; surface
 			// otherwise.
 			if !isAlreadyRegistered(err) {
-				_ = rtInst.Close(ctx)
+				_ = pool.Close(ctx)
 				return nil, fmt.Errorf("register handler %s: %w", taskName, err)
 			}
 		}
@@ -312,6 +353,9 @@ func (e *Engine) SubmitWith(ctx context.Context, opts SubmitOpts) (*Workflow, er
 // Run kicks off an instance of the named workflow. Returns the
 // instance ID; status is read via the underlying workflows.Engine.
 func (e *Engine) Run(ctx context.Context, name string, input []byte) (string, error) {
+	if err := e.policy.Check(ctx, "ts.run", name); err != nil {
+		return "", err
+	}
 	e.mu.RLock()
 	_, ok := e.workflows[name]
 	e.mu.RUnlock()
@@ -330,9 +374,6 @@ func (e *Engine) Inspect(ctx context.Context, instanceID string) (workflows.Inst
 
 func (w *Workflow) makeHandler(taskName string, taskIdx int) workflows.Handler {
 	return func(ctx context.Context, parents map[string][]byte) ([]byte, error) {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-
 		// Build a JS expression that invokes the task with the
 		// parent payloads converted from bytes (UTF-8 strings)
 		// into JS values via JSON.parse where possible.
@@ -362,30 +403,37 @@ func (w *Workflow) makeHandler(taskName string, taskIdx int) workflows.Handler {
 			return JSON.stringify(result === undefined ? null : result);
 		})()`, taskIdx, parentsBlob, taskName)
 
-		promise, err := w.rt.Eval(ctx, invokeSrc, runtime.EvalOpts{Filename: "<task:" + taskName + ">"})
-		if err != nil {
-			return nil, err
-		}
-		// The IIFE always returns a Promise (it's async). Drive
-		// the event loop until it settles.
-		resolved, err := w.rt.Await(ctx, promise)
-		promise.Free(ctx)
-		if err != nil {
-			// Translate JS bundle line/col references in the
-			// error back to TS source lines via the source map
-			// (if available).
-			msg := err.Error()
-			if w.sourceMap != nil {
-				msg = w.sourceMap.RewriteStack(msg)
+		// Borrow a runtime from the per-workflow pool. Up to
+		// JSWorkers handlers run in parallel — each on its own
+		// runtime. Each runtime has the bundle pre-loaded, so
+		// borrowing is cheap.
+		var out []byte
+		err := w.pool.With(ctx, func(rt runtime.Runtime) error {
+			promise, err := rt.Eval(ctx, invokeSrc, runtime.EvalOpts{Filename: "<task:" + taskName + ">"})
+			if err != nil {
+				return err
 			}
-			return nil, fmt.Errorf("task %s: %s", taskName, msg)
-		}
-		defer resolved.Free(ctx)
-		s, err := resolved.String(ctx)
+			resolved, err := rt.Await(ctx, promise)
+			promise.Free(ctx)
+			if err != nil {
+				msg := err.Error()
+				if w.sourceMap != nil {
+					msg = w.sourceMap.RewriteStack(msg)
+				}
+				return fmt.Errorf("task %s: %s", taskName, msg)
+			}
+			defer resolved.Free(ctx)
+			s, sErr := resolved.String(ctx)
+			if sErr != nil {
+				return sErr
+			}
+			out = []byte(s)
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
-		return []byte(s), nil
+		return out, nil
 	}
 }
 

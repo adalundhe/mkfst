@@ -159,6 +159,15 @@ type Stack struct {
 
 	// oneShotSem caps concurrent RunOneShot calls. nil = unlimited.
 	oneShotSem chan struct{}
+
+	// imagePins holds tag → sha256 digest mappings. RunOneShot and
+	// service-container creation consult this to rewrite tag
+	// references into digest references.
+	imagePins *pinTable
+
+	// spoolCapBytes (set via SetSpoolHardCap) limits per-one-shot
+	// per-stream disk spool size. 0 = unbounded.
+	spoolCapBytes int64
 }
 
 // containerInstance holds a created container's identity + per-instance
@@ -186,6 +195,7 @@ func newStack(engine *Engine, id, name string) *Stack {
 		egress:             map[string]*egressHolder{},
 		probes:             map[string][]*replicaProbeState{},
 		stopCh:             make(chan struct{}),
+		imagePins:          newPinTable(),
 	}
 	s.state.Store(int32(StackDown))
 	return s
@@ -255,7 +265,12 @@ func (s *Stack) AddSecret(name string, value []byte) error {
 	if _, dup := s.secrets[name]; dup {
 		return fmt.Errorf("%w: secret %q already added", ErrInvalidConfig, name)
 	}
-	s.secrets[name] = Secret{Name: name, Value: append([]byte(nil), value...)}
+	cp := append([]byte(nil), value...)
+	// mlock best-effort: keeps the secret out of swap on Linux
+	// when CAP_IPC_LOCK is granted; silently skipped otherwise
+	// (the Down-time zero-fill is the second line of defense).
+	_ = lockSecretPages(cp)
+	s.secrets[name] = Secret{Name: name, Value: cp}
 	return nil
 }
 
@@ -301,6 +316,9 @@ func (s *Stack) Monitor() *Monitor {
 // Idempotent: calling Up while already Up returns nil. Calling Up
 // while in any non-Down state returns ErrIllegalStateTransition.
 func (s *Stack) Up(ctx context.Context) error {
+	if err := s.engine.opts.Policy.Check(ctx, "stack.up", s.name); err != nil {
+		return err
+	}
 	if !s.stateCAS(StackDown, StackCreating) {
 		// Allow re-entry from Up (idempotent yes-noop) and Failed
 		// (caller may want to retry).
@@ -397,6 +415,9 @@ func (s *Stack) Up(ctx context.Context) error {
 // reverse dependency order, removes all containers, removes the
 // network, removes materialized secrets. Idempotent.
 func (s *Stack) Down(ctx context.Context) error {
+	if err := s.engine.opts.Policy.Check(ctx, "stack.down", s.name); err != nil {
+		return err
+	}
 	switch s.State() {
 	case StackDown:
 		return nil
@@ -785,8 +806,14 @@ func (s *Stack) buildContainerConfig(svc *Service, replica int, netName, engineI
 		labels[k] = v
 	}
 
+	// Resolve to digest-pinned form. Returns the original ref when
+	// no pin is registered and pinning is not required.
+	resolvedImage, err := s.resolveImage(svc.image)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("service %q: %w", svc.name, err)
+	}
 	cfg := &dockercontainer.Config{
-		Image:      svc.image,
+		Image:      resolvedImage,
 		Env:        envSlice,
 		WorkingDir: svc.workDir,
 		User:       svc.user,
