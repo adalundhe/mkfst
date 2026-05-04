@@ -57,7 +57,7 @@ func (c *Client) Logs(ctx context.Context, containerID string, opts ...LogsOptio
 		opt(state)
 	}
 
-	rc, err := c.cli.ContainerLogs(ctx, containerID, state.opts)
+	rc, err := c.api.ContainerLogs(ctx, containerID, state.opts)
 	if err != nil {
 		return nil, fmt.Errorf("docker.Logs: %w", err)
 	}

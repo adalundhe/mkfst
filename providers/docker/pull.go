@@ -36,7 +36,7 @@ func (c *Client) Pull(ctx context.Context, ref string, opts ...PullOption) (<-ch
 		opt(state)
 	}
 
-	rc, err := c.cli.ImagePull(ctx, ref, state.opts)
+	rc, err := c.api.ImagePull(ctx, ref, state.opts)
 	if err != nil {
 		return nil, fmt.Errorf("docker.Pull: %w", err)
 	}

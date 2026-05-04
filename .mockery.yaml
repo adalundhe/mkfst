@@ -1,0 +1,34 @@
+# mockery v3 config — generates testify mocks for narrow
+# SDK-call interfaces in each provider. Mocks land alongside the
+# source as `*_mock_test.go` files (test-only by suffix), keeping
+# the main source surface free of test-only code.
+all: false
+template: testify
+formatter: goimports
+log-level: warn
+filename: "mock_{{.InterfaceName | snakecase}}_test.go"
+pkgname: "{{.SrcPackageName}}"
+dir: "{{.InterfaceDir}}"
+
+packages:
+  mkfst/providers/aws/dynamodb:
+    interfaces:
+      ddbAPI: {}
+  mkfst/providers/aws/secrets:
+    interfaces:
+      secretsAPI: {}
+  mkfst/providers/aws/sqs:
+    interfaces:
+      sqsAPI: {}
+  mkfst/providers/policy:
+    interfaces:
+      Checker: {}
+  mkfst/providers/cache:
+    interfaces:
+      Cache: {}
+  mkfst/providers/tasks:
+    interfaces:
+      Store: {}
+  mkfst/providers/docker:
+    interfaces:
+      dockerAPI: {}

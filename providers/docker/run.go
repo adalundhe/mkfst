@@ -79,7 +79,7 @@ func (c *Client) Run(ctx context.Context, image string, opts ...RunOption) (*Run
 		opt(state)
 	}
 
-	created, err := c.cli.ContainerCreate(ctx, state.config, state.host, state.network, state.platform, state.name)
+	created, err := c.api.ContainerCreate(ctx, state.config, state.host, state.network, state.platform, state.name)
 	if err != nil {
 		return nil, fmt.Errorf("docker.Run: create: %w", err)
 	}
@@ -90,14 +90,14 @@ func (c *Client) Run(ctx context.Context, image string, opts ...RunOption) (*Run
 	// container so we don't leak.
 	for _, hook := range state.prestart {
 		if err := hook(ctx, c, created.ID); err != nil {
-			_ = c.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+			_ = c.api.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
 			return nil, fmt.Errorf("docker.Run: prestart: %w", err)
 		}
 	}
 
-	if err := c.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if err := c.api.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 		// Best-effort cleanup of the half-created container.
-		_ = c.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+		_ = c.api.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
 		return nil, fmt.Errorf("docker.Run: start: %w", err)
 	}
 
@@ -105,14 +105,14 @@ func (c *Client) Run(ctx context.Context, image string, opts ...RunOption) (*Run
 	// running (sync goroutines, etc).
 	for _, hook := range state.poststart {
 		if err := hook(ctx, c, created.ID); err != nil {
-			_ = c.cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
+			_ = c.api.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true})
 			return nil, fmt.Errorf("docker.Run: poststart: %w", err)
 		}
 	}
 
 	result := &RunResult{ContainerID: created.ID}
 	if state.wait || !state.detach {
-		statusCh, errCh := c.cli.ContainerWait(ctx, created.ID, container.WaitConditionNotRunning)
+		statusCh, errCh := c.api.ContainerWait(ctx, created.ID, container.WaitConditionNotRunning)
 		select {
 		case err := <-errCh:
 			return result, fmt.Errorf("docker.Run: wait: %w", err)
@@ -745,7 +745,7 @@ func (c *Client) Stop(ctx context.Context, containerID string, timeout *time.Dur
 		secs := int(timeout.Seconds())
 		opts.Timeout = &secs
 	}
-	if err := c.cli.ContainerStop(ctx, containerID, opts); err != nil {
+	if err := c.api.ContainerStop(ctx, containerID, opts); err != nil {
 		return fmt.Errorf("docker.Stop: %w", err)
 	}
 	return nil
@@ -755,7 +755,7 @@ func (c *Client) Stop(ctx context.Context, containerID string, timeout *time.Dur
 // shutdown; Kill for SIGKILL or specific signals (e.g. SIGUSR1 to trigger
 // a config reload).
 func (c *Client) Kill(ctx context.Context, containerID, signal string) error {
-	if err := c.cli.ContainerKill(ctx, containerID, signal); err != nil {
+	if err := c.api.ContainerKill(ctx, containerID, signal); err != nil {
 		return fmt.Errorf("docker.Kill: %w", err)
 	}
 	return nil
@@ -768,7 +768,7 @@ func (c *Client) Restart(ctx context.Context, containerID string, timeout *time.
 		secs := int(timeout.Seconds())
 		opts.Timeout = &secs
 	}
-	if err := c.cli.ContainerRestart(ctx, containerID, opts); err != nil {
+	if err := c.api.ContainerRestart(ctx, containerID, opts); err != nil {
 		return fmt.Errorf("docker.Restart: %w", err)
 	}
 	return nil
@@ -787,7 +787,7 @@ type RemoveOpts struct {
 
 // Remove deletes a container. Idempotent for already-removed containers.
 func (c *Client) Remove(ctx context.Context, containerID string, opts RemoveOpts) error {
-	if err := c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
+	if err := c.api.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force:         opts.Force,
 		RemoveVolumes: opts.RemoveVolumes,
 		RemoveLinks:   opts.RemoveLinks,
@@ -810,7 +810,7 @@ func (c *Client) Wait(ctx context.Context, containerID, condition string) (int, 
 	case "removed":
 		cond = container.WaitConditionRemoved
 	}
-	statusCh, errCh := c.cli.ContainerWait(ctx, containerID, cond)
+	statusCh, errCh := c.api.ContainerWait(ctx, containerID, cond)
 	select {
 	case err := <-errCh:
 		return 0, fmt.Errorf("docker.Wait: %w", err)
@@ -828,7 +828,7 @@ func (c *Client) Wait(ctx context.Context, containerID, condition string) (int, 
 // config, network settings, state, mounts, etc. Returned struct is the
 // docker SDK's ContainerJSON unchanged.
 func (c *Client) Inspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
-	resp, err := c.cli.ContainerInspect(ctx, containerID)
+	resp, err := c.api.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return container.InspectResponse{}, fmt.Errorf("docker.Inspect: %w", err)
 	}
@@ -842,7 +842,7 @@ func (c *Client) List(ctx context.Context, opts ...ListOption) ([]container.Summ
 	for _, opt := range opts {
 		opt(&state)
 	}
-	containers, err := c.cli.ContainerList(ctx, state)
+	containers, err := c.api.ContainerList(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("docker.List: %w", err)
 	}

@@ -83,6 +83,7 @@ type Opts struct {
 // and reuse it across operations — it's safe for concurrent use.
 type Client struct {
 	cli  *client.Client
+	api  dockerAPI // narrow interface; usually == cli, swapped in tests
 	opts Opts
 }
 
@@ -127,7 +128,15 @@ func New(opts Opts) (*Client, error) {
 		}
 	}
 
-	return &Client{cli: cli, opts: opts}, nil
+	return &Client{cli: cli, api: cli, opts: opts}, nil
+}
+
+// fromAPI is the test-only constructor: builds a Client around a
+// mock dockerAPI. Methods that touch the concrete *client.Client
+// (Ping/Host/Close/SDK) will panic — callers in tests should
+// avoid those paths.
+func fromAPI(api dockerAPI) *Client {
+	return &Client{api: api}
 }
 
 // SDK returns the underlying docker client. Provided as an escape hatch for

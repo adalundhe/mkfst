@@ -61,7 +61,7 @@ func (c *Client) Build(ctx context.Context, source Source, opts ...BuildOption) 
 
 	state.opts.Context = tarStream
 
-	resp, err := c.cli.ImageBuild(ctx, tarStream, state.opts)
+	resp, err := c.api.ImageBuild(ctx, tarStream, state.opts)
 	if err != nil {
 		_ = tarStream.Close()
 		return nil, fmt.Errorf("docker.Build: %w", err)
@@ -393,7 +393,7 @@ func AddOutput(out Output) BuildOption {
 // CancelBuild gracefully cancels an in-flight build identified by id (set
 // via BuildID at submission time). Only meaningful for BuildKit builds.
 func (c *Client) CancelBuild(ctx context.Context, id string) error {
-	if err := c.cli.BuildCancel(ctx, id); err != nil {
+	if err := c.api.BuildCancel(ctx, id); err != nil {
 		return fmt.Errorf("docker.CancelBuild: %w", err)
 	}
 	return nil

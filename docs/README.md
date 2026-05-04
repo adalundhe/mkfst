@@ -49,6 +49,8 @@ hang off it for the things an API server typically also needs.
 | ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | [providers.md](providers.md)                               | Map of providers, how they layer, how they wire into the HTTP server                   |
 | [policy.md](policy.md)                                     | RBAC layer — framework-defined permissions + operator-defined roles                    |
+| [aws.md](aws.md)                                           | AWS providers — DynamoDB, Secrets Manager, SQS — with shared role-assumption auth      |
+| [testing.md](testing.md)                                   | Interface-boundary + mockery testing pattern used across providers                     |
 | [cache.md](cache.md)                                       | Pluggable key/value cache (memory / Redis / SQL)                                       |
 | [tasks.md](tasks.md)                                       | Background jobs + recurring schedules (memory / Redis / SQL)                           |
 | [workflows.md](workflows.md)                               | DAG of tasks with parent-output flow + per-node failure policies                       |
@@ -78,6 +80,7 @@ Provider examples (each pairs an HTTP API with one or more providers):
 - [`11-workflows`](../examples/11-workflows) — API submitting DAG workflows via `providers/workflows`
 - [`12-stacks`](../examples/12-stacks)       — API managing a docker stack via `providers/docker/network`
 - [`13-ts-workflows`](../examples/13-ts-workflows) — API accepting TypeScript workflows via `providers/ts`
+- [`14-aws`](../examples/14-aws)             — API using DynamoDB + Secrets Manager + SQS via `providers/aws/*`
 
 Run any example from the **repository root** (see
 [examples/README.md](../examples/README.md) for the reason why):
